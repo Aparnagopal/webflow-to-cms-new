@@ -1,12 +1,32 @@
-// Use Node.js built-in fetch instead of axios to avoid dependency issues
 export default async function handler(req, res) {
+  // Add CORS headers for cross-origin requests
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  // Handle preflight OPTIONS request
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  // Log the request method for debugging
+  console.log("Request method:", req.method);
+  console.log("Request headers:", req.headers);
+  console.log("Request body:", req.body);
+
   // Only allow POST requests
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).json({
+      error: "Method not allowed",
+      received: req.method,
+      expected: "POST",
+    });
   }
 
   try {
-    const formData = req.body.data;
+    const formData = req.body.data || req.body;
+    console.log("Form data received:", formData);
+
     if (!formData) {
       return res.status(400).json({ error: "Invalid form data" });
     }
