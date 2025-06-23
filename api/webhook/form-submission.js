@@ -1,5 +1,4 @@
-const axios = require("axios");
-
+// Use Node.js built-in fetch instead of axios to avoid dependency issues
 export default async function handler(req, res) {
   // Only allow POST requests
   if (req.method !== "POST") {
@@ -20,45 +19,51 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: "Server configuration error" });
     }
 
-    // Create CMS item via Webflow API
-    const response = await axios.post(
+    // Create CMS item via Webflow API using fetch
+    const response = await fetch(
       `https://api.webflow.com/v2/collections/${process.env.WEBFLOW_COLLECTION_ID}/items`,
       {
-        isArchived: false,
-        isDraft: false,
-        fieldData: {
-          Name,
-          Slug: `submission-${Date.now()}`,
-          SchoolName,
-          City,
-          Country,
-        },
-      },
-      {
+        method: "POST",
         headers: {
           Authorization: `Bearer ${process.env.WEBFLOW_API_KEY}`,
           "accept-version": "2.0.0",
           "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          isArchived: false,
+          isDraft: false,
+          fieldData: {
+            Name,
+            Slug: `submission-${Date.now()}`,
+            SchoolName,
+            City,
+            Country,
+          },
+        }),
       }
     );
 
-    console.log("CMS item created:", response.data);
-    res.status(200).json({ success: true, data: response.data });
+    if (!response.ok) {
+      const errorData = await response.text();
+      console.error("Webflow API error:", response.status, errorData);
+      return res.status(response.status).json({
+        error: "Failed to create CMS item",
+        details: errorData,
+      });
+    }
+
+    const responseData = await response.json();
+    console.log("CMS item created:", responseData);
+
+    res.status(200).json({
+      success: true,
+      data: responseData,
+    });
   } catch (error) {
-    console.error(
-      "Error creating CMS item:",
-      error.response ? error.response.data : error.message
-    );
-
-    // Return more specific error information
-    const statusCode = error.response?.status || 500;
-    const errorMessage =
-      error.response?.data?.message || "Failed to save to CMS";
-
-    res.status(statusCode).json({
-      error: errorMessage,
-      details: error.response?.data,
+    console.error("Error creating CMS item:", error.message);
+    res.status(500).json({
+      error: "Internal server error",
+      message: error.message,
     });
   }
 }
