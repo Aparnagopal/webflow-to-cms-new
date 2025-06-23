@@ -2,7 +2,7 @@
   "name": "webflow-cms-integration",
   "version": "1.0.0",
   "description": "Webflow form to CMS integration",
-  "main": "index.js",
+  "main": "api/webhook/form-submission.js",
   "scripts": {
     "dev": "vercel dev",
     "build": "echo 'No build step required'",
