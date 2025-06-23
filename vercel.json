@@ -1,11 +1,1 @@
-{
-  "functions": {
-    "api/**/*.js": {
-      "runtime": "nodejs18.x"
-    }
-  },
-  "env": {
-    "WEBFLOW_API_KEY": "@webflow-api-key",
-    "WEBFLOW_COLLECTION_ID": "@webflow-collection-id"
-  }
-}
+{}
