@@ -1,0 +1,17 @@
+{
+  "name": "webflow-cms-integration",
+  "version": "1.0.0",
+  "description": "Webflow form to CMS integration",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'No build step required'",
+    "start": "echo 'Use vercel dev for local development'"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
