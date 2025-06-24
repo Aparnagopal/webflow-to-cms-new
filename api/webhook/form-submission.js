@@ -36,16 +36,42 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Handle different payload formats from Webflow
-    let formData = req.body;
+    // Log the entire request body for debugging
+    console.log(
+      `[${timestamp}] Raw request body:`,
+      JSON.stringify(req.body, null, 2)
+    );
 
-    // Webflow sometimes sends data in a 'data' property
-    if (req.body && req.body.data) {
-      formData = req.body.data;
+    // Extract form data from Webflow webhook structure
+    let formData = null;
+
+    // Check for Webflow form submission structure
+    if (
+      req.body &&
+      req.body.triggerType === "form_submission" &&
+      req.body.payload &&
+      req.body.payload.data
+    ) {
+      console.log(`[${timestamp}] Detected Webflow form submission webhook`);
+      formData = req.body.payload.data;
+    }
+    // Fallback: Check for direct payload.data structure
+    else if (req.body && req.body.payload && req.body.payload.data) {
+      console.log(`[${timestamp}] Using req.body.payload.data as form data`);
+      formData = req.body.payload.data;
+    }
+    // Fallback: Direct form data in body
+    else if (
+      req.body &&
+      typeof req.body === "object" &&
+      !req.body.triggerType
+    ) {
+      console.log(`[${timestamp}] Using direct body as form data`);
+      formData = req.body;
     }
 
     console.log(
-      `[${timestamp}] Processed form data:`,
+      `[${timestamp}] Extracted form data:`,
       JSON.stringify(formData, null, 2)
     );
 
@@ -58,24 +84,8 @@ export default async function handler(req, res) {
       });
     }
 
-    // Try different field name variations that Webflow might use
-    const extractField = (obj, possibleNames) => {
-      for (const name of possibleNames) {
-        if (obj[name] !== undefined && obj[name] !== null && obj[name] !== "") {
-          return obj[name];
-        }
-      }
-      return null;
-    };
-
-    // Extract fields with multiple possible names
-    const Name = extractField(formData.data, ["Name", "name"]);
-    const SchoolName = extractField(formData.data, [
-      "SchoolName",
-      "schoolName",
-    ]);
-    const City = formData.data.City;
-    const Country = extractField(formData.data, ["Country", "country"]);
+    // Extract fields directly from the form data
+    const { Name, SchoolName, City, Country } = formData;
 
     // Log extracted fields
     console.log(`[${timestamp}] Extracted fields:`, {
@@ -85,11 +95,27 @@ export default async function handler(req, res) {
       Country,
     });
 
+    // Log all available fields in the form data for debugging
+    console.log(`[${timestamp}] All available fields in form data:`);
+    Object.keys(formData).forEach((key) => {
+      console.log(`  - ${key}: ${formData[key]}`);
+    });
+
     // Validate required environment variables
     if (!process.env.WEBFLOW_API_KEY || !process.env.WEBFLOW_COLLECTION_ID) {
       console.error(`[${timestamp}] Missing required environment variables`);
       return res.status(500).json({
         error: "Server configuration error",
+        timestamp: timestamp,
+      });
+    }
+
+    // Validate that we have at least some form data
+    if (!Name && !SchoolName && !City && !Country) {
+      return res.status(400).json({
+        error: "No form fields found",
+        availableFields: Object.keys(formData),
+        receivedData: formData,
         timestamp: timestamp,
       });
     }
@@ -105,7 +131,7 @@ export default async function handler(req, res) {
           fieldData: {
             name: Name || `Submission ${Date.now()}`, // 'name' is required by Webflow API
             slug: `submission-${Date.now()}`,
-            schoolname: SchoolName, // Use kebab-case for field names
+            schoolname: SchoolName,
             city: City,
             country: Country,
           },
@@ -114,7 +140,7 @@ export default async function handler(req, res) {
     };
 
     console.log(
-      `[${timestamp}] Payload being sent:`,
+      `[${timestamp}] Payload being sent to Webflow:`,
       JSON.stringify(payload, null, 2)
     );
 
@@ -145,27 +171,10 @@ export default async function handler(req, res) {
         errorData
       );
 
-      // Special handling for validation errors
-      if (webflowResponse.status === 400) {
-        return res.status(400).json({
-          error: "Webflow API validation error",
-          details: errorData,
-          troubleshooting: {
-            steps: [
-              "1. Check that your CMS collection has the required fields",
-              "2. Verify field names match your CMS collection (use kebab-case)",
-              "3. Ensure 'name' field exists in your collection",
-              "4. Check that all required fields are provided",
-            ],
-            sentPayload: payload,
-          },
-          timestamp: timestamp,
-        });
-      }
-
       return res.status(webflowResponse.status).json({
         error: "Failed to create CMS item",
         details: errorData,
+        webflowStatus: webflowResponse.status,
         timestamp: timestamp,
       });
     }
@@ -178,7 +187,14 @@ export default async function handler(req, res) {
 
     res.status(200).json({
       success: true,
+      message: "Form submission processed successfully",
       data: responseData,
+      extractedFields: { Name, SchoolName, City, Country },
+      submissionInfo: {
+        formId: req.body.payload?.formId,
+        submittedAt: req.body.payload?.submittedAt,
+        siteId: req.body.payload?.siteId,
+      },
       timestamp: timestamp,
     });
   } catch (error) {
