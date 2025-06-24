@@ -14,13 +14,6 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // Log all request details for debugging
-  console.log(`[${timestamp}] Request method:`, req.method);
-  console.log(
-    `[${timestamp}] Request body:`,
-    JSON.stringify(req.body, null, 2)
-  );
-
   // Handle GET requests for testing
   if (req.method === "GET") {
     return res.status(200).json({
@@ -78,31 +71,35 @@ export default async function handler(req, res) {
     // Validate required environment variables
     if (!process.env.WEBFLOW_API_KEY || !process.env.WEBFLOW_COLLECTION_ID) {
       console.error(`[${timestamp}] Missing required environment variables`);
-      console.error(
-        `[${timestamp}] API Key exists:`,
-        !!process.env.WEBFLOW_API_KEY
-      );
-      console.error(
-        `[${timestamp}] Collection ID exists:`,
-        !!process.env.WEBFLOW_COLLECTION_ID
-      );
       return res.status(500).json({
         error: "Server configuration error",
         timestamp: timestamp,
       });
     }
 
-    // Log API key format for debugging (first 10 chars only for security)
-    console.log(
-      `[${timestamp}] API Key format:`,
-      process.env.WEBFLOW_API_KEY.substring(0, 10) + "..."
-    );
-    console.log(
-      `[${timestamp}] Collection ID:`,
-      process.env.WEBFLOW_COLLECTION_ID
-    );
-
     console.log(`[${timestamp}] Making request to Webflow API...`);
+
+    // Create the payload according to Webflow API v2 specification
+    const payload = {
+      items: [
+        {
+          isArchived: false,
+          isDraft: false,
+          fieldData: {
+            name: Name || `Submission ${Date.now()}`, // 'name' is required by Webflow API
+            slug: `submission-${Date.now()}`,
+            "school-name": SchoolName, // Use kebab-case for field names
+            city: City,
+            country: Country,
+          },
+        },
+      ],
+    };
+
+    console.log(
+      `[${timestamp}] Payload being sent:`,
+      JSON.stringify(payload, null, 2)
+    );
 
     // Create CMS item via Webflow API using fetch
     const webflowResponse = await fetch(
@@ -114,17 +111,7 @@ export default async function handler(req, res) {
           "accept-version": "2.0.0",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          isArchived: false,
-          isDraft: false,
-          fieldData: {
-            Name,
-            Slug: `submission-${Date.now()}`,
-            SchoolName,
-            City,
-            Country,
-          },
-        }),
+        body: JSON.stringify(payload),
       }
     );
 
@@ -141,18 +128,19 @@ export default async function handler(req, res) {
         errorData
       );
 
-      // Special handling for 401 errors
-      if (webflowResponse.status === 401) {
-        return res.status(401).json({
-          error: "Webflow API authentication failed",
-          details: "Please check your API key and permissions",
+      // Special handling for validation errors
+      if (webflowResponse.status === 400) {
+        return res.status(400).json({
+          error: "Webflow API validation error",
+          details: errorData,
           troubleshooting: {
             steps: [
-              "1. Verify your API key in Webflow dashboard",
-              "2. Ensure API key has CMS write permissions",
-              "3. Check if API key is expired",
-              "4. Verify collection ID is correct",
+              "1. Check that your CMS collection has the required fields",
+              "2. Verify field names match your CMS collection (use kebab-case)",
+              "3. Ensure 'name' field exists in your collection",
+              "4. Check that all required fields are provided",
             ],
+            sentPayload: payload,
           },
           timestamp: timestamp,
         });
