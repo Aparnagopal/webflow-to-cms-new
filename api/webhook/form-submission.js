@@ -69,10 +69,13 @@ export default async function handler(req, res) {
     };
 
     // Extract fields with multiple possible names
-    const Name = extractField(formData, ["Name", "name"]);
-    const SchoolName = extractField(formData, ["SchoolName", "schoolName"]);
-    const City = extractField(formData, ["City", "city"]);
-    const Country = extractField(formData, ["Country", "country"]);
+    const Name = extractField(formData.data, ["Name", "name"]);
+    const SchoolName = extractField(formData.data, [
+      "SchoolName",
+      "schoolName",
+    ]);
+    const City = formData.data.City;
+    const Country = extractField(formData.data, ["Country", "country"]);
 
     // Log extracted fields
     console.log(`[${timestamp}] Extracted fields:`, {
@@ -102,7 +105,7 @@ export default async function handler(req, res) {
           fieldData: {
             name: Name || `Submission ${Date.now()}`, // 'name' is required by Webflow API
             slug: `submission-${Date.now()}`,
-            "school-name": SchoolName, // Use kebab-case for field names
+            schoolname: SchoolName, // Use kebab-case for field names
             city: City,
             country: Country,
           },
