@@ -58,7 +58,21 @@ export default async function handler(req, res) {
       });
     }
 
-    const { Name, SchoolName, City, Country } = formData;
+    // Try different field name variations that Webflow might use
+    const extractField = (obj, possibleNames) => {
+      for (const name of possibleNames) {
+        if (obj[name] !== undefined && obj[name] !== null && obj[name] !== "") {
+          return obj[name];
+        }
+      }
+      return null;
+    };
+
+    // Extract fields with multiple possible names
+    const Name = extractField(formData, ["Name", "name"]);
+    const SchoolName = extractField(formData, ["SchoolName", "schoolName"]);
+    const City = extractField(formData, ["City", "city"]);
+    const Country = extractField(formData, ["Country", "country"]);
 
     // Log extracted fields
     console.log(`[${timestamp}] Extracted fields:`, {
