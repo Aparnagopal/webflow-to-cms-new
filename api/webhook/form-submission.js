@@ -114,6 +114,42 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   }
 }
 
+// Function to publish CMS item
+async function publishCmsItem(itemId, collectionId, apiKey, timestamp) {
+  try {
+    console.log(`[${timestamp}] Publishing CMS item: ${itemId}`);
+
+    const response = await fetch(
+      `https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}/publish`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log(`[${timestamp}] Publish response status: ${response.status}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `[${timestamp}] Failed to publish item: ${response.status} - ${errorText}`
+      );
+      return false;
+    }
+
+    const publishData = await response.json();
+    console.log(`[${timestamp}] Item published successfully:`, publishData);
+    return true;
+  } catch (error) {
+    console.error(`[${timestamp}] Error publishing item:`, error.message);
+    return false;
+  }
+}
+
 export default async function handler(req, res) {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Function invoked`);
@@ -230,8 +266,8 @@ export default async function handler(req, res) {
           WEBFLOW_API_KEY: !!process.env.WEBFLOW_API_KEY,
           WEBFLOW_DONOR_COMMENTS_COLLECTION_ID:
             !!process.env.WEBFLOW_DONOR_COMMENTS_COLLECTION_ID,
-          WEBFLOW_STUDENTS_COLLECTION_ID:
-            !!process.env.WEBFLOW_STUDENTS_COLLECTION_ID,
+          WEBFLOW_STUDENTSCRFD_COLLECTION_ID:
+            !!process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
         },
         timestamp,
       });
@@ -380,6 +416,21 @@ export default async function handler(req, res) {
       slug = `submission-${Date.now()}`;
     }
 
+    // Generate message date & time using form-specific logic
+    let messageDateTime;
+    try {
+      messageDateTime = formConfig.generateMessageDateTime(formData);
+      console.log(
+        `[${timestamp}] Generated message date time: ${messageDateTime}`
+      );
+    } catch (dateError) {
+      console.error(
+        `[${timestamp}] Error generating message date time:`,
+        dateError.message
+      );
+      messageDateTime = new Date().toISOString();
+    }
+
     // Ensure 'name' field exists (required by Webflow API)
     if (!extractedData.name) {
       const firstValue =
@@ -397,6 +448,7 @@ export default async function handler(req, res) {
           fieldData: {
             ...extractedData,
             slug: slug,
+            "message-date-time": messageDateTime, // Add the date-time field
           },
         },
       ],
@@ -444,6 +496,26 @@ export default async function handler(req, res) {
       const responseData = await webflowResponse.json();
       console.log(`[${timestamp}] CMS item created successfully`);
 
+      // Get the created item ID for publishing
+      const createdItemId = responseData.items?.[0]?.id;
+      let publishSuccess = false;
+
+      if (createdItemId) {
+        console.log(
+          `[${timestamp}] Attempting to publish item: ${createdItemId}`
+        );
+        publishSuccess = await publishCmsItem(
+          createdItemId,
+          formConfig.collectionId,
+          process.env.WEBFLOW_API_KEY,
+          timestamp
+        );
+      } else {
+        console.log(
+          `[${timestamp}] No item ID found in response, cannot publish`
+        );
+      }
+
       res.status(200).json({
         success: true,
         message: `${formConfig.name} submission processed successfully`,
@@ -452,6 +524,8 @@ export default async function handler(req, res) {
         data: responseData,
         extractedFields: extractedData,
         skippedFields: skippedFields,
+        published: publishSuccess,
+        itemId: createdItemId,
         timestamp,
       });
     } catch (apiError) {
