@@ -114,13 +114,13 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   }
 }
 
-// Function to publish CMS item
-async function publishCmsItem(itemId, collectionId, apiKey, timestamp) {
+// Function to publish site (publishes all pending changes)
+async function publishSite(siteId, apiKey, timestamp) {
   try {
-    console.log(`[${timestamp}] Publishing CMS item: ${itemId}`);
+    console.log(`[${timestamp}] Publishing site: ${siteId}`);
 
     const response = await fetch(
-      `https://api.webflow.com/v2/collections/${collectionId}/items/${itemId}/publish`,
+      `https://api.webflow.com/v2/sites/${siteId}/publish`,
       {
         method: "POST",
         headers: {
@@ -128,24 +128,29 @@ async function publishCmsItem(itemId, collectionId, apiKey, timestamp) {
           "accept-version": "2.0.0",
           "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          publishToWebflowSubdomain: true,
+        }),
       }
     );
 
-    console.log(`[${timestamp}] Publish response status: ${response.status}`);
+    console.log(
+      `[${timestamp}] Site publish response status: ${response.status}`
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error(
-        `[${timestamp}] Failed to publish item: ${response.status} - ${errorText}`
+        `[${timestamp}] Failed to publish site: ${response.status} - ${errorText}`
       );
       return false;
     }
 
     const publishData = await response.json();
-    console.log(`[${timestamp}] Item published successfully:`, publishData);
+    console.log(`[${timestamp}] Site published successfully:`, publishData);
     return true;
   } catch (error) {
-    console.error(`[${timestamp}] Error publishing item:`, error.message);
+    console.error(`[${timestamp}] Error publishing site:`, error.message);
     return false;
   }
 }
@@ -439,12 +444,12 @@ export default async function handler(req, res) {
       console.log(`[${timestamp}] Generated name field: ${extractedData.name}`);
     }
 
-    // Create CMS payload
+    // Create CMS payload - Create as published directly
     const payload = {
       items: [
         {
           isArchived: false,
-          isDraft: false,
+          isDraft: false, // Create as published (not draft)
           fieldData: {
             ...extractedData,
             slug: slug,
@@ -496,25 +501,17 @@ export default async function handler(req, res) {
       const responseData = await webflowResponse.json();
       console.log(`[${timestamp}] CMS item created successfully`);
 
-      // Get the created item ID for publishing
+      // Get the created item ID
       const createdItemId = responseData.items?.[0]?.id;
       let publishSuccess = false;
 
-      if (createdItemId) {
-        console.log(
-          `[${timestamp}] Attempting to publish item: ${createdItemId}`
-        );
-        publishSuccess = await publishCmsItem(
-          createdItemId,
-          formConfig.collectionId,
-          process.env.WEBFLOW_API_KEY,
-          timestamp
-        );
-      } else {
-        console.log(
-          `[${timestamp}] No item ID found in response, cannot publish`
-        );
-      }
+      // Publish the entire site to make the changes live
+      // if (webhookInfo.siteId && webhookInfo.siteId !== "unknown") {
+      //  console.log(`[${timestamp}] Attempting to publish site: ${webhookInfo.siteId}`)
+      // publishSuccess = await publishSite(webhookInfo.siteId, process.env.WEBFLOW_API_KEY, timestamp)
+      //} else {
+      // console.log(`[${timestamp}] No site ID available, cannot publish site`)
+      //}
 
       res.status(200).json({
         success: true,
@@ -524,8 +521,9 @@ export default async function handler(req, res) {
         data: responseData,
         extractedFields: extractedData,
         skippedFields: skippedFields,
-        published: publishSuccess,
+        sitePublished: publishSuccess,
         itemId: createdItemId,
+        siteId: webhookInfo.siteId,
         timestamp,
       });
     } catch (apiError) {
