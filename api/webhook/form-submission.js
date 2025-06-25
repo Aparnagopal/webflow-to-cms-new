@@ -7,9 +7,17 @@ const FORM_CONFIGS = {
     fieldMapping: {
       DonorName: "name",
       DonorMessage: "donor-message",
-      StudentProfile: "student-profile",
+      StudentProfile: "student-profile", // This is a reference field
     },
-    requiredFields: ["DonorName"], // Fixed: was "Name", should be "DonorName"
+    requiredFields: ["DonorName"],
+    referenceFields: {
+      // Define reference field configurations
+      "student-profile": {
+        collectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID, // Collection being referenced
+        lookupField: "name", // Field to search by in the referenced collection
+        createIfNotFound: false, // Whether to create new items if not found
+      },
+    },
     generateSlug: (data) => {
       try {
         const donorName = data.DonorName || "donor";
@@ -23,6 +31,51 @@ const FORM_CONFIGS = {
     generateMessageDateTime: () => new Date().toISOString(),
   },
 };
+
+// Function to lookup reference items
+async function lookupReferenceItem(value, referenceConfig, apiKey) {
+  try {
+    console.log(
+      `Looking up reference item: ${value} in collection: ${referenceConfig.collectionId}`
+    );
+
+    const response = await fetch(
+      `https://api.webflow.com/v2/collections/${referenceConfig.collectionId}/items`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      console.error(`Failed to fetch reference items: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    const items = data.items || [];
+
+    // Look for item with matching name (case-insensitive)
+    const matchingItem = items.find(
+      (item) =>
+        item.fieldData[referenceConfig.lookupField]?.toLowerCase() ===
+        value.toLowerCase()
+    );
+
+    if (matchingItem) {
+      console.log(`Found matching reference item: ${matchingItem.id}`);
+      return matchingItem.id;
+    }
+
+    console.log(`No matching reference item found for: ${value}`);
+    return null;
+  } catch (error) {
+    console.error(`Error looking up reference item:`, error.message);
+    return null;
+  }
+}
 
 export default async function handler(req, res) {
   const timestamp = new Date().toISOString();
@@ -140,6 +193,8 @@ export default async function handler(req, res) {
           WEBFLOW_API_KEY: !!process.env.WEBFLOW_API_KEY,
           WEBFLOW_DONOR_COMMENTS_COLLECTION_ID:
             !!process.env.WEBFLOW_DONOR_COMMENTS_COLLECTION_ID,
+          WEBFLOW_STUDENTS_COLLECTION_ID:
+            !!process.env.WEBFLOW_STUDENTS_COLLECTION_ID,
         },
         timestamp,
       });
@@ -155,22 +210,62 @@ export default async function handler(req, res) {
 
     try {
       // Map form fields according to configuration
-      Object.entries(formConfig.fieldMapping).forEach(
-        ([webflowField, cmsField]) => {
-          const value = formData[webflowField];
-          if (value !== undefined && value !== null && value !== "") {
+      for (const [webflowField, cmsField] of Object.entries(
+        formConfig.fieldMapping
+      )) {
+        const value = formData[webflowField];
+
+        if (value !== undefined && value !== null && value !== "") {
+          // Check if this is a reference field
+          if (
+            formConfig.referenceFields &&
+            formConfig.referenceFields[cmsField]
+          ) {
+            console.log(
+              `[${timestamp}] Processing reference field: ${cmsField} with value: ${value}`
+            );
+
+            const referenceConfig = formConfig.referenceFields[cmsField];
+            if (!referenceConfig.collectionId) {
+              console.log(
+                `[${timestamp}] Skipping reference field ${cmsField} - no collection ID configured`
+              );
+              continue;
+            }
+
+            // Look up the reference item
+            const referenceId = await lookupReferenceItem(
+              value,
+              referenceConfig,
+              process.env.WEBFLOW_API_KEY
+            );
+
+            if (referenceId) {
+              extractedData[cmsField] = referenceId;
+              console.log(
+                `[${timestamp}] Mapped reference field ${cmsField} to ID: ${referenceId}`
+              );
+            } else {
+              console.log(
+                `[${timestamp}] Could not resolve reference for ${cmsField}: ${value}`
+              );
+              // Skip this field or handle as needed
+              continue;
+            }
+          } else {
+            // Regular field mapping
             extractedData[cmsField] = value;
           }
-
-          // Check required fields
-          if (
-            formConfig.requiredFields.includes(webflowField) &&
-            (!value || value.trim() === "")
-          ) {
-            missingRequired.push(webflowField);
-          }
         }
-      );
+
+        // Check required fields
+        if (
+          formConfig.requiredFields.includes(webflowField) &&
+          (!value || value.trim() === "")
+        ) {
+          missingRequired.push(webflowField);
+        }
+      }
 
       console.log(`[${timestamp}] Extracted data:`, extractedData);
       console.log(`[${timestamp}] All available fields in form data:`);
@@ -211,24 +306,8 @@ export default async function handler(req, res) {
       slug = `submission-${Date.now()}`;
     }
 
-    // Generate message date & time using form-specific logic
-    let messageDateTime;
-    try {
-      messageDateTime = formConfig.generateMessageDateTime(formData);
-      console.log(
-        `[${timestamp}] Generated message date time: ${messageDateTime}`
-      );
-    } catch (dateError) {
-      console.error(
-        `[${timestamp}] Error generating message date time:`,
-        dateError.message
-      );
-      messageDateTime = new Date().toISOString();
-    }
-
     // Ensure 'name' field exists (required by Webflow API)
     if (!extractedData.name) {
-      // Try to use the first available field as name, or generate one
       const firstValue =
         Object.values(extractedData)[0] || `Submission ${Date.now()}`;
       extractedData.name = firstValue;
