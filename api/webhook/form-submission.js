@@ -9,10 +9,18 @@ const FORM_CONFIGS = {
       DonorMessage: "donor-message",
       StudentProfile: "student-profile",
     },
-    requiredFields: ["Name"],
-    generateSlug: (data) =>
-      `school-${data.Name?.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}`,
-    generateMessageDateTime: (data) => `${Date.now()}`,
+    requiredFields: ["DonorName"], // Fixed: was "Name", should be "DonorName"
+    generateSlug: (data) => {
+      try {
+        const donorName = data.DonorName || "donor";
+        return `donor-${donorName
+          .toLowerCase()
+          .replace(/\s+/g, "-")}-${Date.now()}`;
+      } catch (error) {
+        return `donor-submission-${Date.now()}`;
+      }
+    },
+    generateMessageDateTime: () => new Date().toISOString(),
   },
 };
 
@@ -60,20 +68,37 @@ export default async function handler(req, res) {
     let formId = null;
     let webhookInfo = null;
 
-    if (req.body?.triggerType === "form_submission" && req.body?.payload) {
-      formData = req.body.payload.data;
-      formId = req.body.payload.formId;
-      webhookInfo = {
-        siteId: req.body.payload.siteId,
-        submittedAt: req.body.payload.submittedAt,
-        pageId: req.body.payload.pageId,
-        publishedPath: req.body.payload.publishedPath,
-      };
-      console.log(`[${timestamp}] Webflow form submission detected`);
-    } else {
+    try {
+      if (req.body?.triggerType === "form_submission" && req.body?.payload) {
+        formData = req.body.payload.data;
+        formId = req.body.payload.formId;
+        webhookInfo = {
+          siteId: req.body.payload.siteId || "unknown",
+          submittedAt: req.body.payload.submittedAt || new Date().toISOString(),
+          pageId: req.body.payload.pageId || "unknown",
+          publishedPath: req.body.payload.publishedPath || "/unknown",
+        };
+        console.log(`[${timestamp}] Webflow form submission detected`);
+      } else {
+        console.log(`[${timestamp}] Invalid webhook format`);
+        return res.status(400).json({
+          error: "Invalid webhook format",
+          expected: "Webflow form submission webhook",
+          received: {
+            triggerType: req.body?.triggerType,
+            hasPayload: !!req.body?.payload,
+          },
+          timestamp,
+        });
+      }
+    } catch (extractionError) {
+      console.error(
+        `[${timestamp}] Error extracting webhook data:`,
+        extractionError.message
+      );
       return res.status(400).json({
-        error: "Invalid webhook format",
-        expected: "Webflow form submission webhook",
+        error: "Failed to extract webhook data",
+        details: extractionError.message,
         timestamp,
       });
     }
@@ -97,6 +122,7 @@ export default async function handler(req, res) {
 
     // Validate required environment variables
     if (!process.env.WEBFLOW_API_KEY) {
+      console.error(`[${timestamp}] Missing WEBFLOW_API_KEY`);
       return res.status(500).json({
         error: "Missing WEBFLOW_API_KEY environment variable",
         timestamp,
@@ -104,41 +130,68 @@ export default async function handler(req, res) {
     }
 
     if (!formConfig.collectionId) {
+      console.error(
+        `[${timestamp}] Missing collection ID for form: ${formConfig.name}`
+      );
       return res.status(500).json({
         error: `Missing collection ID for form: ${formConfig.name}`,
-        requiredEnvVar: `WEBFLOW_${formConfig.name
-          .toUpperCase()
-          .replace(/\s+/g, "_")}_COLLECTION_ID`,
+        requiredEnvVar: "WEBFLOW_DONOR_COMMENTS_COLLECTION_ID",
+        availableEnvVars: {
+          WEBFLOW_API_KEY: !!process.env.WEBFLOW_API_KEY,
+          WEBFLOW_DONOR_COMMENTS_COLLECTION_ID:
+            !!process.env.WEBFLOW_DONOR_COMMENTS_COLLECTION_ID,
+        },
         timestamp,
       });
     }
+
+    console.log(
+      `[${timestamp}] Using collection ID: ${formConfig.collectionId}`
+    );
 
     // Extract and map form fields
     const extractedData = {};
     const missingRequired = [];
 
-    // Map form fields according to configuration
-    Object.entries(formConfig.fieldMapping).forEach(
-      ([webflowField, cmsField]) => {
-        const value = formData[webflowField];
-        if (value !== undefined && value !== null && value !== "") {
-          extractedData[cmsField] = value;
-        }
+    try {
+      // Map form fields according to configuration
+      Object.entries(formConfig.fieldMapping).forEach(
+        ([webflowField, cmsField]) => {
+          const value = formData[webflowField];
+          if (value !== undefined && value !== null && value !== "") {
+            extractedData[cmsField] = value;
+          }
 
-        // Check required fields
-        if (
-          formConfig.requiredFields.includes(webflowField) &&
-          (!value || value.trim() === "")
-        ) {
-          missingRequired.push(webflowField);
+          // Check required fields
+          if (
+            formConfig.requiredFields.includes(webflowField) &&
+            (!value || value.trim() === "")
+          ) {
+            missingRequired.push(webflowField);
+          }
         }
-      }
-    );
+      );
 
-    console.log(`[${timestamp}] Extracted data:`, extractedData);
+      console.log(`[${timestamp}] Extracted data:`, extractedData);
+      console.log(`[${timestamp}] All available fields in form data:`);
+      Object.keys(formData).forEach((key) => {
+        console.log(`  - ${key}: ${formData[key]}`);
+      });
+    } catch (mappingError) {
+      console.error(
+        `[${timestamp}] Error mapping fields:`,
+        mappingError.message
+      );
+      return res.status(500).json({
+        error: "Failed to map form fields",
+        details: mappingError.message,
+        timestamp,
+      });
+    }
 
     // Validate required fields
     if (missingRequired.length > 0) {
+      console.log(`[${timestamp}] Missing required fields:`, missingRequired);
       return res.status(400).json({
         error: "Missing required fields",
         missingFields: missingRequired,
@@ -149,10 +202,29 @@ export default async function handler(req, res) {
     }
 
     // Generate slug using form-specific logic
-    const slug = formConfig.generateSlug(formData);
+    let slug;
+    try {
+      slug = formConfig.generateSlug(formData);
+      console.log(`[${timestamp}] Generated slug: ${slug}`);
+    } catch (slugError) {
+      console.error(`[${timestamp}] Error generating slug:`, slugError.message);
+      slug = `submission-${Date.now()}`;
+    }
 
     // Generate message date & time using form-specific logic
-    const message_date_time = formConfig.generateMessageDateTime(formData);
+    let messageDateTime;
+    try {
+      messageDateTime = formConfig.generateMessageDateTime(formData);
+      console.log(
+        `[${timestamp}] Generated message date time: ${messageDateTime}`
+      );
+    } catch (dateError) {
+      console.error(
+        `[${timestamp}] Error generating message date time:`,
+        dateError.message
+      );
+      messageDateTime = new Date().toISOString();
+    }
 
     // Ensure 'name' field exists (required by Webflow API)
     if (!extractedData.name) {
@@ -160,6 +232,7 @@ export default async function handler(req, res) {
       const firstValue =
         Object.values(extractedData)[0] || `Submission ${Date.now()}`;
       extractedData.name = firstValue;
+      console.log(`[${timestamp}] Generated name field: ${extractedData.name}`);
     }
 
     // Create CMS payload
@@ -171,7 +244,7 @@ export default async function handler(req, res) {
           fieldData: {
             ...extractedData,
             slug: slug,
-            message_date_time: message - date - time,
+            "message-date-time": messageDateTime, // Fixed syntax error
             "submitted-at": webhookInfo.submittedAt,
             "form-id": formId,
             "page-path": webhookInfo.publishedPath,
@@ -186,54 +259,69 @@ export default async function handler(req, res) {
     );
 
     // Send to Webflow CMS
-    const webflowResponse = await fetch(
-      `https://api.webflow.com/v2/collections/${formConfig.collectionId}/items`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.WEBFLOW_API_KEY}`,
-          "accept-version": "2.0.0",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
+    try {
+      console.log(`[${timestamp}] Making request to Webflow API...`);
+      const webflowResponse = await fetch(
+        `https://api.webflow.com/v2/collections/${formConfig.collectionId}/items`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${process.env.WEBFLOW_API_KEY}`,
+            "accept-version": "2.0.0",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+
+      console.log(
+        `[${timestamp}] Webflow API response status:`,
+        webflowResponse.status
+      );
+
+      if (!webflowResponse.ok) {
+        const errorData = await webflowResponse.text();
+        console.error(`[${timestamp}] Webflow API error:`, errorData);
+
+        return res.status(webflowResponse.status).json({
+          error: "Failed to create CMS item",
+          formName: formConfig.name,
+          collectionId: formConfig.collectionId,
+          details: errorData,
+          timestamp,
+        });
       }
-    );
 
-    console.log(
-      `[${timestamp}] Webflow API response status:`,
-      webflowResponse.status
-    );
+      const responseData = await webflowResponse.json();
+      console.log(`[${timestamp}] CMS item created successfully`);
 
-    if (!webflowResponse.ok) {
-      const errorData = await webflowResponse.text();
-      console.error(`[${timestamp}] Webflow API error:`, errorData);
-
-      return res.status(webflowResponse.status).json({
-        error: "Failed to create CMS item",
+      res.status(200).json({
+        success: true,
+        message: `${formConfig.name} submission processed successfully`,
+        formId,
         formName: formConfig.name,
-        collectionId: formConfig.collectionId,
-        details: errorData,
+        data: responseData,
+        extractedFields: extractedData,
+        timestamp,
+      });
+    } catch (apiError) {
+      console.error(
+        `[${timestamp}] Error calling Webflow API:`,
+        apiError.message
+      );
+      return res.status(500).json({
+        error: "Failed to call Webflow API",
+        details: apiError.message,
         timestamp,
       });
     }
-
-    const responseData = await webflowResponse.json();
-    console.log(`[${timestamp}] CMS item created successfully`);
-
-    res.status(200).json({
-      success: true,
-      message: `${formConfig.name} submission processed successfully`,
-      formId,
-      formName: formConfig.name,
-      data: responseData,
-      extractedFields: extractedData,
-      timestamp,
-    });
   } catch (error) {
-    console.error(`[${timestamp}] Error:`, error.message);
+    console.error(`[${timestamp}] Unexpected error:`, error.message);
+    console.error(`[${timestamp}] Error stack:`, error.stack);
     res.status(500).json({
       error: "Internal server error",
       message: error.message,
+      stack: error.stack,
       timestamp,
     });
   }
