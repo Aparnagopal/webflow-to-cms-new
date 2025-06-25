@@ -244,10 +244,6 @@ export default async function handler(req, res) {
           fieldData: {
             ...extractedData,
             slug: slug,
-            "message-date-time": messageDateTime, // Fixed syntax error
-            "submitted-at": webhookInfo.submittedAt,
-            "form-id": formId,
-            "page-path": webhookInfo.publishedPath,
           },
         },
       ],
