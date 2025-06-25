@@ -16,6 +16,7 @@ const FORM_CONFIGS = {
         collectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID, // Collection being referenced
         lookupField: "name", // Field to search by in the referenced collection
         createIfNotFound: false, // Whether to create new items if not found
+        fallbackToText: true, // If true, use text value when reference lookup fails
       },
     },
     generateSlug: (data) => {
@@ -33,11 +34,18 @@ const FORM_CONFIGS = {
 };
 
 // Function to lookup reference items
-async function lookupReferenceItem(value, referenceConfig, apiKey) {
+async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   try {
     console.log(
-      `Looking up reference item: ${value} in collection: ${referenceConfig.collectionId}`
+      `[${timestamp}] Looking up reference item: "${value}" in collection: ${referenceConfig.collectionId}`
     );
+
+    if (!referenceConfig.collectionId) {
+      console.log(
+        `[${timestamp}] No collection ID provided for reference lookup`
+      );
+      return null;
+    }
 
     const response = await fetch(
       `https://api.webflow.com/v2/collections/${referenceConfig.collectionId}/items`,
@@ -49,30 +57,59 @@ async function lookupReferenceItem(value, referenceConfig, apiKey) {
       }
     );
 
+    console.log(
+      `[${timestamp}] Reference lookup response status: ${response.status}`
+    );
+
     if (!response.ok) {
-      console.error(`Failed to fetch reference items: ${response.status}`);
+      const errorText = await response.text();
+      console.error(
+        `[${timestamp}] Failed to fetch reference items: ${response.status} - ${errorText}`
+      );
       return null;
     }
 
     const data = await response.json();
     const items = data.items || [];
 
-    // Look for item with matching name (case-insensitive)
-    const matchingItem = items.find(
-      (item) =>
-        item.fieldData[referenceConfig.lookupField]?.toLowerCase() ===
-        value.toLowerCase()
+    console.log(
+      `[${timestamp}] Found ${items.length} items in reference collection`
+    );
+    console.log(
+      `[${timestamp}] Looking for item with ${referenceConfig.lookupField} = "${value}"`
     );
 
+    // Log all available items for debugging
+    items.forEach((item, index) => {
+      const fieldValue = item.fieldData[referenceConfig.lookupField];
+      console.log(
+        `[${timestamp}] Item ${index}: ${referenceConfig.lookupField} = "${fieldValue}" (ID: ${item.id})`
+      );
+    });
+
+    // Look for item with matching name (case-insensitive)
+    const matchingItem = items.find((item) => {
+      const itemValue = item.fieldData[referenceConfig.lookupField];
+      if (!itemValue) return false;
+      return itemValue.toLowerCase().trim() === value.toLowerCase().trim();
+    });
+
     if (matchingItem) {
-      console.log(`Found matching reference item: ${matchingItem.id}`);
+      console.log(
+        `[${timestamp}] Found matching reference item: ${matchingItem.id} for "${value}"`
+      );
       return matchingItem.id;
     }
 
-    console.log(`No matching reference item found for: ${value}`);
+    console.log(
+      `[${timestamp}] No matching reference item found for: "${value}"`
+    );
     return null;
   } catch (error) {
-    console.error(`Error looking up reference item:`, error.message);
+    console.error(
+      `[${timestamp}] Error looking up reference item:`,
+      error.message
+    );
     return null;
   }
 }
@@ -207,6 +244,7 @@ export default async function handler(req, res) {
     // Extract and map form fields
     const extractedData = {};
     const missingRequired = [];
+    const skippedFields = [];
 
     try {
       // Map form fields according to configuration
@@ -214,6 +252,9 @@ export default async function handler(req, res) {
         formConfig.fieldMapping
       )) {
         const value = formData[webflowField];
+        console.log(
+          `[${timestamp}] Processing field: ${webflowField} -> ${cmsField} with value: "${value}"`
+        );
 
         if (value !== undefined && value !== null && value !== "") {
           // Check if this is a reference field
@@ -222,40 +263,69 @@ export default async function handler(req, res) {
             formConfig.referenceFields[cmsField]
           ) {
             console.log(
-              `[${timestamp}] Processing reference field: ${cmsField} with value: ${value}`
+              `[${timestamp}] Processing reference field: ${cmsField} with value: "${value}"`
             );
 
             const referenceConfig = formConfig.referenceFields[cmsField];
+
             if (!referenceConfig.collectionId) {
               console.log(
-                `[${timestamp}] Skipping reference field ${cmsField} - no collection ID configured`
+                `[${timestamp}] No collection ID for reference field ${cmsField}`
               );
-              continue;
-            }
-
-            // Look up the reference item
-            const referenceId = await lookupReferenceItem(
-              value,
-              referenceConfig,
-              process.env.WEBFLOW_API_KEY
-            );
-
-            if (referenceId) {
-              extractedData[cmsField] = referenceId;
-              console.log(
-                `[${timestamp}] Mapped reference field ${cmsField} to ID: ${referenceId}`
-              );
+              if (referenceConfig.fallbackToText) {
+                console.log(
+                  `[${timestamp}] Using fallback text value for ${cmsField}`
+                );
+                extractedData[cmsField] = value;
+              } else {
+                console.log(
+                  `[${timestamp}] Skipping reference field ${cmsField} - no collection ID`
+                );
+                skippedFields.push(`${cmsField} (no collection ID)`);
+                continue;
+              }
             } else {
-              console.log(
-                `[${timestamp}] Could not resolve reference for ${cmsField}: ${value}`
+              // Look up the reference item
+              const referenceId = await lookupReferenceItem(
+                value,
+                referenceConfig,
+                process.env.WEBFLOW_API_KEY,
+                timestamp
               );
-              // Skip this field or handle as needed
-              continue;
+
+              if (referenceId) {
+                extractedData[cmsField] = referenceId;
+                console.log(
+                  `[${timestamp}] Mapped reference field ${cmsField} to ID: ${referenceId}`
+                );
+              } else {
+                console.log(
+                  `[${timestamp}] Could not resolve reference for ${cmsField}: "${value}"`
+                );
+
+                if (referenceConfig.fallbackToText) {
+                  console.log(
+                    `[${timestamp}] Using fallback text value for ${cmsField}`
+                  );
+                  extractedData[cmsField] = value;
+                } else {
+                  console.log(
+                    `[${timestamp}] Skipping reference field ${cmsField} - no match found`
+                  );
+                  skippedFields.push(`${cmsField} (no match for "${value}")`);
+                  continue;
+                }
+              }
             }
           } else {
             // Regular field mapping
             extractedData[cmsField] = value;
+            console.log(
+              `[${timestamp}] Mapped regular field ${cmsField}: "${value}"`
+            );
           }
+        } else {
+          console.log(`[${timestamp}] Skipping empty field: ${webflowField}`);
         }
 
         // Check required fields
@@ -268,9 +338,13 @@ export default async function handler(req, res) {
       }
 
       console.log(`[${timestamp}] Extracted data:`, extractedData);
+      if (skippedFields.length > 0) {
+        console.log(`[${timestamp}] Skipped fields:`, skippedFields);
+      }
+
       console.log(`[${timestamp}] All available fields in form data:`);
       Object.keys(formData).forEach((key) => {
-        console.log(`  - ${key}: ${formData[key]}`);
+        console.log(`  - ${key}: "${formData[key]}"`);
       });
     } catch (mappingError) {
       console.error(
@@ -377,6 +451,7 @@ export default async function handler(req, res) {
         formName: formConfig.name,
         data: responseData,
         extractedFields: extractedData,
+        skippedFields: skippedFields,
         timestamp,
       });
     } catch (apiError) {
