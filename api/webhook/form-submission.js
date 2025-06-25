@@ -79,14 +79,6 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
       `[${timestamp}] Looking for item with ${referenceConfig.lookupField} = "${value}"`
     );
 
-    // Log all available items for debugging
-    items.forEach((item, index) => {
-      const fieldValue = item.fieldData[referenceConfig.lookupField];
-      console.log(
-        `[${timestamp}] Item ${index}: ${referenceConfig.lookupField} = "${fieldValue}" (ID: ${item.id})`
-      );
-    });
-
     // Look for item with matching name (case-insensitive)
     const matchingItem = items.find((item) => {
       const itemValue = item.fieldData[referenceConfig.lookupField];
@@ -114,13 +106,17 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   }
 }
 
-// Function to publish site (publishes all pending changes)
-async function publishSite(siteId, apiKey, timestamp) {
+// Function to publish specific CMS items using bulk publish endpoint
+async function publishCmsItems(itemIds, collectionId, apiKey, timestamp) {
   try {
-    console.log(`[${timestamp}] Publishing site: ${siteId}`);
+    console.log(
+      `[${timestamp}] Publishing CMS items: ${itemIds.join(
+        ", "
+      )} in collection: ${collectionId}`
+    );
 
     const response = await fetch(
-      `https://api.webflow.com/v2/sites/${siteId}/publish`,
+      `https://api.webflow.com/v2/collections/${collectionId}/items/publish`,
       {
         method: "POST",
         headers: {
@@ -129,29 +125,29 @@ async function publishSite(siteId, apiKey, timestamp) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          publishToWebflowSubdomain: true,
+          itemIds: itemIds,
         }),
       }
     );
 
     console.log(
-      `[${timestamp}] Site publish response status: ${response.status}`
+      `[${timestamp}] Bulk publish response status: ${response.status}`
     );
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error(
-        `[${timestamp}] Failed to publish site: ${response.status} - ${errorText}`
+        `[${timestamp}] Failed to publish items: ${response.status} - ${errorText}`
       );
-      return false;
+      return { success: false, error: errorText, status: response.status };
     }
 
     const publishData = await response.json();
-    console.log(`[${timestamp}] Site published successfully:`, publishData);
-    return true;
+    console.log(`[${timestamp}] Items published successfully:`, publishData);
+    return { success: true, data: publishData };
   } catch (error) {
-    console.error(`[${timestamp}] Error publishing site:`, error.message);
-    return false;
+    console.error(`[${timestamp}] Error publishing items:`, error.message);
+    return { success: false, error: error.message };
   }
 }
 
@@ -444,12 +440,12 @@ export default async function handler(req, res) {
       console.log(`[${timestamp}] Generated name field: ${extractedData.name}`);
     }
 
-    // Create CMS payload - Create as published directly
+    // Create CMS payload - Create as draft first, then publish
     const payload = {
       items: [
         {
           isArchived: false,
-          isDraft: false, // Create as published (not draft)
+          isDraft: true, // Create as draft first
           fieldData: {
             ...extractedData,
             slug: slug,
@@ -503,15 +499,24 @@ export default async function handler(req, res) {
 
       // Get the created item ID
       const createdItemId = responseData.items?.[0]?.id;
-      let publishSuccess = false;
+      let publishResult = { success: false };
 
-      // Publish the entire site to make the changes live
-      // if (webhookInfo.siteId && webhookInfo.siteId !== "unknown") {
-      //  console.log(`[${timestamp}] Attempting to publish site: ${webhookInfo.siteId}`)
-      // publishSuccess = await publishSite(webhookInfo.siteId, process.env.WEBFLOW_API_KEY, timestamp)
-      //} else {
-      // console.log(`[${timestamp}] No site ID available, cannot publish site`)
-      //}
+      // Try to publish the specific item using bulk publish endpoint
+      if (createdItemId) {
+        console.log(
+          `[${timestamp}] Attempting to publish item: ${createdItemId}`
+        );
+        publishResult = await publishCmsItems(
+          [createdItemId],
+          formConfig.collectionId,
+          process.env.WEBFLOW_API_KEY,
+          timestamp
+        );
+      } else {
+        console.log(
+          `[${timestamp}] No item ID found in response, cannot publish`
+        );
+      }
 
       res.status(200).json({
         success: true,
@@ -521,9 +526,8 @@ export default async function handler(req, res) {
         data: responseData,
         extractedFields: extractedData,
         skippedFields: skippedFields,
-        sitePublished: publishSuccess,
+        publishResult: publishResult,
         itemId: createdItemId,
-        siteId: webhookInfo.siteId,
         timestamp,
       });
     } catch (apiError) {
