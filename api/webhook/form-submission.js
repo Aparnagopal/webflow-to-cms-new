@@ -19,6 +19,14 @@ const FORM_CONFIGS = {
         fallbackToText: true, // If true, use text value when reference lookup fails
       },
     },
+    // Configuration for updating student records with multi-reference
+    updateStudentRecord: {
+      enabled: true,
+      collectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
+      lookupField: "name", // Field to find the student by
+      updateField: "donor_message", // Multi-reference field to update in student record
+      isMultiReference: true, // This is a multi-reference field
+    },
     generateSlug: (data) => {
       try {
         const donorName = data.DonorName || "donor";
@@ -90,7 +98,7 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
       console.log(
         `[${timestamp}] Found matching reference item: ${matchingItem.id} for "${value}"`
       );
-      return matchingItem.id;
+      return { id: matchingItem.id, item: matchingItem };
     }
 
     console.log(
@@ -103,6 +111,171 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
       error.message
     );
     return null;
+  }
+}
+
+// Function to update student record with donor comment reference
+async function updateStudentRecord(
+  studentName,
+  donorCommentId,
+  updateConfig,
+  apiKey,
+  timestamp
+) {
+  try {
+    console.log(
+      `[${timestamp}] Updating student record for: "${studentName}" with donor comment ID: "${donorCommentId}"`
+    );
+
+    if (!updateConfig.enabled || !updateConfig.collectionId) {
+      console.log(
+        `[${timestamp}] Student record update not enabled or no collection ID`
+      );
+      return { success: false, reason: "Update not enabled" };
+    }
+
+    if (!donorCommentId) {
+      console.log(
+        `[${timestamp}] No donor comment ID provided for student update`
+      );
+      return { success: false, reason: "No donor comment ID provided" };
+    }
+
+    // First, find the student record
+    const response = await fetch(
+      `https://api.webflow.com/v2/collections/${updateConfig.collectionId}/items`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+        },
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `[${timestamp}] Failed to fetch student items: ${response.status} - ${errorText}`
+      );
+      return { success: false, error: errorText };
+    }
+
+    const data = await response.json();
+    const items = data.items || [];
+
+    console.log(`[${timestamp}] Found ${items.length} student items`);
+
+    // Find the student by name
+    const studentItem = items.find((item) => {
+      const itemValue = item.fieldData[updateConfig.lookupField];
+      if (!itemValue) return false;
+      return (
+        itemValue.toLowerCase().trim() === studentName.toLowerCase().trim()
+      );
+    });
+
+    if (!studentItem) {
+      console.log(`[${timestamp}] Student not found: "${studentName}"`);
+      return { success: false, reason: `Student not found: ${studentName}` };
+    }
+
+    console.log(`[${timestamp}] Found student record: ${studentItem.id}`);
+
+    // Get current multi-reference field value (should be an array of IDs)
+    const currentDonorMessages =
+      studentItem.fieldData[updateConfig.updateField] || [];
+    console.log(
+      `[${timestamp}] Current donor_message references:`,
+      currentDonorMessages
+    );
+
+    // Ensure it's an array
+    const currentReferences = Array.isArray(currentDonorMessages)
+      ? currentDonorMessages
+      : [];
+
+    // Check if this donor comment ID already exists to avoid duplicates
+    if (currentReferences.includes(donorCommentId)) {
+      console.log(
+        `[${timestamp}] Donor comment ID "${donorCommentId}" already exists in references`
+      );
+      return {
+        success: true,
+        reason: "Donor comment already referenced",
+        noUpdate: true,
+      };
+    }
+
+    // Add the new donor comment ID to the array
+    const updatedReferences = [...currentReferences, donorCommentId];
+    console.log(
+      `[${timestamp}] Updated donor_message references will be:`,
+      updatedReferences
+    );
+
+    // Update the student record
+    const updatePayload = {
+      items: [
+        {
+          id: studentItem.id,
+          isArchived: false,
+          isDraft: false,
+          fieldData: {
+            ...studentItem.fieldData,
+            [updateConfig.updateField]: updatedReferences,
+          },
+        },
+      ],
+    };
+
+    console.log(
+      `[${timestamp}] Updating student record with payload:`,
+      JSON.stringify(updatePayload, null, 2)
+    );
+
+    const updateResponse = await fetch(
+      `https://api.webflow.com/v2/collections/${updateConfig.collectionId}/items`,
+      {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(updatePayload),
+      }
+    );
+
+    console.log(
+      `[${timestamp}] Student update response status: ${updateResponse.status}`
+    );
+
+    if (!updateResponse.ok) {
+      const errorText = await updateResponse.text();
+      console.error(
+        `[${timestamp}] Failed to update student record: ${updateResponse.status} - ${errorText}`
+      );
+      return { success: false, error: errorText };
+    }
+
+    const updateResult = await updateResponse.json();
+    console.log(`[${timestamp}] Student record updated successfully`);
+
+    return {
+      success: true,
+      studentId: studentItem.id,
+      updatedField: updateConfig.updateField,
+      addedReference: donorCommentId,
+      totalReferences: updatedReferences.length,
+      allReferences: updatedReferences,
+      data: updateResult,
+    };
+  } catch (error) {
+    console.error(
+      `[${timestamp}] Error updating student record:`,
+      error.message
+    );
+    return { success: false, error: error.message };
   }
 }
 
@@ -323,17 +496,17 @@ export default async function handler(req, res) {
               }
             } else {
               // Look up the reference item
-              const referenceId = await lookupReferenceItem(
+              const referenceResult = await lookupReferenceItem(
                 value,
                 referenceConfig,
                 process.env.WEBFLOW_API_KEY,
                 timestamp
               );
 
-              if (referenceId) {
-                extractedData[cmsField] = referenceId;
+              if (referenceResult && referenceResult.id) {
+                extractedData[cmsField] = referenceResult.id;
                 console.log(
-                  `[${timestamp}] Mapped reference field ${cmsField} to ID: ${referenceId}`
+                  `[${timestamp}] Mapped reference field ${cmsField} to ID: ${referenceResult.id}`
                 );
               } else {
                 console.log(
@@ -500,6 +673,7 @@ export default async function handler(req, res) {
       // Get the created item ID
       const createdItemId = responseData.items?.[0]?.id;
       let publishResult = { success: false };
+      let studentUpdateResult = { success: false };
 
       // Try to publish the specific item using bulk publish endpoint
       if (createdItemId) {
@@ -512,9 +686,38 @@ export default async function handler(req, res) {
           process.env.WEBFLOW_API_KEY,
           timestamp
         );
+
+        // Update student record with donor comment reference (after successful creation)
+        if (
+          formConfig.updateStudentRecord &&
+          formConfig.updateStudentRecord.enabled
+        ) {
+          const studentName = formData.StudentProfile;
+
+          if (studentName && createdItemId) {
+            console.log(
+              `[${timestamp}] Updating student "${studentName}" with donor comment ID "${createdItemId}"`
+            );
+            studentUpdateResult = await updateStudentRecord(
+              studentName,
+              createdItemId,
+              formConfig.updateStudentRecord,
+              process.env.WEBFLOW_API_KEY,
+              timestamp
+            );
+          } else {
+            console.log(
+              `[${timestamp}] Missing student name or donor comment ID for update`
+            );
+            studentUpdateResult = {
+              success: false,
+              reason: "Missing student name or donor comment ID",
+            };
+          }
+        }
       } else {
         console.log(
-          `[${timestamp}] No item ID found in response, cannot publish`
+          `[${timestamp}] No item ID found in response, cannot publish or update student`
         );
       }
 
@@ -527,6 +730,7 @@ export default async function handler(req, res) {
         extractedFields: extractedData,
         skippedFields: skippedFields,
         publishResult: publishResult,
+        studentUpdateResult: studentUpdateResult,
         itemId: createdItemId,
         timestamp,
       });
