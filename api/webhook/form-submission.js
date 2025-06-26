@@ -24,7 +24,7 @@ const FORM_CONFIGS = {
       enabled: true,
       collectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
       lookupField: "name", // Field to find the student by
-      updateField: "donor_message", // Multi-reference field to update in student record
+      updateField: "donor-message", // Multi-reference field to update in student record (note: hyphen, not underscore)
       isMultiReference: true, // This is a multi-reference field
     },
     generateSlug: (data) => {
@@ -181,11 +181,23 @@ async function updateStudentRecord(
 
     console.log(`[${timestamp}] Found student record: ${studentItem.id}`);
 
+    // Debug: Log all field names in the student record to identify the correct field
+    console.log(`[${timestamp}] Available fields in student record:`);
+    Object.keys(studentItem.fieldData).forEach((fieldName) => {
+      if (fieldName.includes("donor")) {
+        console.log(
+          `  - ${fieldName}: ${JSON.stringify(
+            studentItem.fieldData[fieldName]
+          )}`
+        );
+      }
+    });
+
     // Get current multi-reference field value (should be an array of IDs)
     const currentDonorMessages =
       studentItem.fieldData[updateConfig.updateField] || [];
     console.log(
-      `[${timestamp}] Current donor_message references:`,
+      `[${timestamp}] Current ${updateConfig.updateField} references:`,
       currentDonorMessages
     );
 
@@ -209,7 +221,7 @@ async function updateStudentRecord(
     // Add the new donor comment ID to the array
     const updatedReferences = [...currentReferences, donorCommentId];
     console.log(
-      `[${timestamp}] Updated donor_message references will be:`,
+      `[${timestamp}] Updated ${updateConfig.updateField} references will be:`,
       updatedReferences
     );
 
