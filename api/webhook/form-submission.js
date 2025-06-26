@@ -717,6 +717,33 @@ export default async function handler(req, res) {
               process.env.WEBFLOW_API_KEY,
               timestamp
             );
+
+            // Publish the updated student record if the update was successful
+            if (studentUpdateResult.success && studentUpdateResult.studentId) {
+              console.log(
+                `[${timestamp}] Publishing updated student record: ${studentUpdateResult.studentId}`
+              );
+              const studentPublishResult = await publishCmsItems(
+                [studentUpdateResult.studentId],
+                formConfig.updateStudentRecord.collectionId,
+                process.env.WEBFLOW_API_KEY,
+                timestamp
+              );
+
+              // Add student publish result to the response
+              studentUpdateResult.publishResult = studentPublishResult;
+
+              if (studentPublishResult.success) {
+                console.log(
+                  `[${timestamp}] Student record published successfully`
+                );
+              } else {
+                console.log(
+                  `[${timestamp}] Failed to publish student record:`,
+                  studentPublishResult.error
+                );
+              }
+            }
           } else {
             console.log(
               `[${timestamp}] Missing student name or donor comment ID for update`
