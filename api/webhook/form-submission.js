@@ -39,6 +39,72 @@ const FORM_CONFIGS = {
     },
     generateMessageDateTime: () => new Date().toISOString(),
   },
+
+  /// General Applications form
+  "680ffe82754f33838006203e": {
+    name: "General Applications",
+    collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID, // Using environment variable
+    fieldMapping: {
+      // Common form fields - customize these based on your actual form fields
+      FirstName: "first-name",
+      LastName: "last-name",
+      Email: "email",
+      Phone: "phone",
+      UserName: "user-name", // This will be the main name field
+      DateOfBirth: "date-of-birth",
+      School: "school",
+      SchoolYear: "school-year",
+      Degree: "degree",
+      Major: "major",
+      AnticipatedGraduationDate: "anticipated-graduation-date",
+      FullTime: "full-time",
+      RequiredCredits: "required-credits",
+      RemainingCredits: "remaining-credits",
+      GPA: "gpa",
+      Address: "address",
+      City: "city",
+      State: "state",
+      Zip: "zip",
+      CurrentAddressCheckbox: "current-address-checkbox",
+      ResidencyDuration: "residency-duration",
+    },
+    requiredFields: [
+      "FirstName",
+      "LastName",
+      "Email",
+      "Phone",
+      "RequiredCredits",
+      "RemainingCredits",
+      "GPA",
+      "Address",
+      "City",
+      "State",
+      "Zip",
+      "ResidencyDuration",
+    ], // Customize based on your required fields
+    referenceFields: {
+      // Add reference field configurations if needed
+      // Example:
+      // "department": {
+      //   collectionId: process.env.WEBFLOW_DEPARTMENTS_COLLECTION_ID,
+      //   lookupField: "name",
+      //   createIfNotFound: false,
+      //   fallbackToText: true,
+      // },
+    },
+    generateSlug: (data) => {
+      try {
+        const name = data["LastName"] || data["FirstName"] || data["Email"];
+        return `application-${name
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")}-${Date.now()}`;
+      } catch (error) {
+        return `application-${Date.now()}`;
+      }
+    },
+    generateSubmissionDateTime: () => new Date().toISOString(),
+  },
 };
 
 // Function to lookup reference items
@@ -447,13 +513,18 @@ export default async function handler(req, res) {
       );
       return res.status(500).json({
         error: `Missing collection ID for form: ${formConfig.name}`,
-        requiredEnvVar: "WEBFLOW_DONOR_COMMENTS_COLLECTION_ID",
+        requiredEnvVar:
+          formId === "680ffe82754f33838006203e"
+            ? "WEBFLOW_GENRLAPPL_COLLECTION_ID"
+            : "WEBFLOW_DONOR_COMMENTS_COLLECTION_ID",
         availableEnvVars: {
           WEBFLOW_API_KEY: !!process.env.WEBFLOW_API_KEY,
           WEBFLOW_DONOR_COMMENTS_COLLECTION_ID:
             !!process.env.WEBFLOW_DONOR_COMMENTS_COLLECTION_ID,
           WEBFLOW_STUDENTSCRFD_COLLECTION_ID:
             !!process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
+          WEBFLOW_GENRLAPPL_COLLECTION_ID:
+            !!process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID,
         },
         timestamp,
       });
@@ -602,19 +673,25 @@ export default async function handler(req, res) {
       slug = `submission-${Date.now()}`;
     }
 
-    // Generate message date & time using form-specific logic
-    let messageDateTime;
+    // Generate submission date & time using form-specific logic
+    let submissionDateTime;
     try {
-      messageDateTime = formConfig.generateMessageDateTime(formData);
+      if (formConfig.generateSubmissionDateTime) {
+        submissionDateTime = formConfig.generateSubmissionDateTime(formData);
+      } else if (formConfig.generateMessageDateTime) {
+        submissionDateTime = formConfig.generateMessageDateTime(formData);
+      } else {
+        submissionDateTime = new Date().toISOString();
+      }
       console.log(
-        `[${timestamp}] Generated message date time: ${messageDateTime}`
+        `[${timestamp}] Generated submission date time: ${submissionDateTime}`
       );
     } catch (dateError) {
       console.error(
-        `[${timestamp}] Error generating message date time:`,
+        `[${timestamp}] Error generating submission date time:`,
         dateError.message
       );
-      messageDateTime = new Date().toISOString();
+      submissionDateTime = new Date().toISOString();
     }
 
     // Ensure 'name' field exists (required by Webflow API)
@@ -634,7 +711,7 @@ export default async function handler(req, res) {
           fieldData: {
             ...extractedData,
             slug: slug,
-            "message-date-time": messageDateTime, // Add the date-time field
+            "submission-date-time": submissionDateTime, // Add the date-time field
           },
         },
       ],
@@ -699,7 +776,7 @@ export default async function handler(req, res) {
           timestamp
         );
 
-        // Update student record with donor comment reference (after successful creation)
+        // Update student record with donor comment reference (only for donor comments form)
         if (
           formConfig.updateStudentRecord &&
           formConfig.updateStudentRecord.enabled
