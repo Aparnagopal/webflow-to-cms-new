@@ -40,17 +40,19 @@ const FORM_CONFIGS = {
     generateMessageDateTime: () => new Date().toISOString(),
   },
 
-  /// General Applications form
+  /// General Applications form - UPDATED WITH DEBUGGING AND FLEXIBLE MAPPING
   "680ffe82754f33838006203e": {
     name: "General Applications",
     collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID, // Using environment variable
     fieldMapping: {
-      // Common form fields - customize these based on your actual form fields
+      // IMPORTANT: These field mappings may need adjustment based on actual form field names
+      // Check the logs after deployment to see the exact field names being submitted
+
       FirstName: "first-name",
       LastName: "last-name",
       Email: "email",
       Phone: "phone",
-      UserName: "user-name", // This will be the main name field
+      UserName: "name", // Changed from "user-name" to "name" (required by Webflow)
       DateOfBirth: "date-of-birth",
       School: "school",
       SchoolYear: "school-year",
@@ -68,33 +70,18 @@ const FORM_CONFIGS = {
       CurrentAddressCheckbox: "current-address-checkbox",
       ResidencyDuration: "residency-duration",
     },
-    requiredFields: [
-      "FirstName",
-      "LastName",
-      "Email",
-      "Phone",
-      "RequiredCredits",
-      "RemainingCredits",
-      "GPA",
-      "Address",
-      "City",
-      "State",
-      "Zip",
-      "ResidencyDuration",
-    ], // Customize based on your required fields
+    // Reduced required fields to avoid validation errors - add back as needed
+    requiredFields: ["FirstName", "LastName", "Email"],
     referenceFields: {
       // Add reference field configurations if needed
-      // Example:
-      // "department": {
-      //   collectionId: process.env.WEBFLOW_DEPARTMENTS_COLLECTION_ID,
-      //   lookupField: "name",
-      //   createIfNotFound: false,
-      //   fallbackToText: true,
-      // },
     },
     generateSlug: (data) => {
       try {
-        const name = data["LastName"] || data["FirstName"] || data["Email"];
+        const name =
+          data["LastName"] ||
+          data["FirstName"] ||
+          data["Email"] ||
+          "application";
         return `application-${name
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, "-")
@@ -103,7 +90,8 @@ const FORM_CONFIGS = {
         return `application-${Date.now()}`;
       }
     },
-    generateSubmissionDateTime: () => new Date().toISOString(),
+    // Don't add automatic date fields unless they exist in your CMS schema
+    addAutomaticFields: false,
   },
 };
 
@@ -484,6 +472,16 @@ export default async function handler(req, res) {
     console.log(`[${timestamp}] Form ID: ${formId}`);
     console.log(`[${timestamp}] Form data:`, JSON.stringify(formData, null, 2));
 
+    // ENHANCED DEBUGGING: Show all form field names to help with mapping
+    console.log(`[${timestamp}] === FORM FIELD DEBUGGING ===`);
+    console.log(`[${timestamp}] Available form fields:`);
+    Object.keys(formData).forEach((key, index) => {
+      console.log(
+        `[${timestamp}]   ${index + 1}. "${key}" = "${formData[key]}"`
+      );
+    });
+    console.log(`[${timestamp}] === END FORM FIELD DEBUGGING ===`);
+
     // Get form configuration
     const formConfig = FORM_CONFIGS[formId];
     if (!formConfig) {
@@ -492,6 +490,7 @@ export default async function handler(req, res) {
         error: "Unknown form ID",
         formId,
         supportedForms: Object.keys(FORM_CONFIGS),
+        availableFormFields: Object.keys(formData), // Added for debugging
         timestamp,
       });
     }
@@ -635,10 +634,23 @@ export default async function handler(req, res) {
         console.log(`[${timestamp}] Skipped fields:`, skippedFields);
       }
 
-      console.log(`[${timestamp}] All available fields in form data:`);
-      Object.keys(formData).forEach((key) => {
-        console.log(`  - ${key}: "${formData[key]}"`);
-      });
+      // Enhanced debugging: Show unmapped fields
+      const mappedFields = Object.keys(formConfig.fieldMapping);
+      const unmappedFields = Object.keys(formData).filter(
+        (field) => !mappedFields.includes(field)
+      );
+      if (unmappedFields.length > 0) {
+        console.log(`[${timestamp}] === UNMAPPED FIELDS ===`);
+        console.log(
+          `[${timestamp}] These form fields are not mapped to CMS fields:`
+        );
+        unmappedFields.forEach((field, index) => {
+          console.log(
+            `[${timestamp}]   ${index + 1}. "${field}" = "${formData[field]}"`
+          );
+        });
+        console.log(`[${timestamp}] === END UNMAPPED FIELDS ===`);
+      }
     } catch (mappingError) {
       console.error(
         `[${timestamp}] Error mapping fields:`,
@@ -673,27 +685,6 @@ export default async function handler(req, res) {
       slug = `submission-${Date.now()}`;
     }
 
-    // Generate submission date & time using form-specific logic
-    let submissionDateTime;
-    try {
-      if (formConfig.generateSubmissionDateTime) {
-        submissionDateTime = formConfig.generateSubmissionDateTime(formData);
-      } else if (formConfig.generateMessageDateTime) {
-        submissionDateTime = formConfig.generateMessageDateTime(formData);
-      } else {
-        submissionDateTime = new Date().toISOString();
-      }
-      console.log(
-        `[${timestamp}] Generated submission date time: ${submissionDateTime}`
-      );
-    } catch (dateError) {
-      console.error(
-        `[${timestamp}] Error generating submission date time:`,
-        dateError.message
-      );
-      submissionDateTime = new Date().toISOString();
-    }
-
     // Ensure 'name' field exists (required by Webflow API)
     if (!extractedData.name) {
       const firstValue =
@@ -702,7 +693,7 @@ export default async function handler(req, res) {
       console.log(`[${timestamp}] Generated name field: ${extractedData.name}`);
     }
 
-    // Create CMS payload - Create as draft first, then publish
+    // Create CMS payload - REMOVED AUTOMATIC FIELD ADDITION
     const payload = {
       items: [
         {
@@ -711,7 +702,7 @@ export default async function handler(req, res) {
           fieldData: {
             ...extractedData,
             slug: slug,
-            "submission-date-time": submissionDateTime, // Add the date-time field
+            // REMOVED: "submission-date-time": submissionDateTime - only add fields that exist in your CMS schema
           },
         },
       ],
@@ -752,6 +743,9 @@ export default async function handler(req, res) {
           formName: formConfig.name,
           collectionId: formConfig.collectionId,
           details: errorData,
+          availableFormFields: Object.keys(formData), // Added for debugging
+          configuredFieldMappings: formConfig.fieldMapping, // Added for debugging
+          extractedData: extractedData, // Added for debugging
           timestamp,
         });
       }
@@ -848,6 +842,7 @@ export default async function handler(req, res) {
         publishResult: publishResult,
         studentUpdateResult: studentUpdateResult,
         itemId: createdItemId,
+        availableFormFields: Object.keys(formData), // Added for debugging
         timestamp,
       });
     } catch (apiError) {

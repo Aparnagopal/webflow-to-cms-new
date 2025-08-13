@@ -1,20 +1,5 @@
 // Separate configuration file for better organization
 export const FORM_CONFIGS = {
-  // Your existing school form
-  "682602bb5760376d719623e7": {
-    name: "School Registration Form",
-    collectionId: process.env.WEBFLOW_SCHOOL_COLLECTION_ID,
-    fieldMapping: {
-      Name: "name",
-      SchoolName: "school-name",
-      City: "city",
-      Country: "country",
-    },
-    requiredFields: ["Name"],
-    generateSlug: (data) =>
-      `school-${data.Name?.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}`,
-  },
-
   /// Crowd Funding Donor comments form
   "6852c7791d84f17a29ace6f0": {
     name: "Student Crowd Funding Donor Comments",
