@@ -67,21 +67,16 @@ export const FORM_CONFIGS = {
       Zip: "zip",
       CurrentAddressCheckbox: "current-address-checkbox",
       ResidencyDuration: "residency-duration",
+      FundingOpportunities: "funding-opportunities",
+      FundingTerm: "funding-term",
+      EmploymentStatus: "employment-status",
+      OtherSourcesofIncome: "other-sources-of-income",
+      TotalMonthlyIncome: "total-monthly-income",
+      MonthlyHousingPayment: "monthly-housing-payment",
+      HaveDebt: "have-debt",
+      TotalDebtAmount: "total-debt-amount",
     },
-    requiredFields: [
-      "FirstName",
-      "LastName",
-      "Email",
-      "Phone",
-      "RequiredCredits",
-      "RemainingCredits",
-      "GPA",
-      "Address",
-      "City",
-      "State",
-      "Zip",
-      "ResidencyDuration",
-    ], // Customize based on your required fields
+    requiredFields: ["FirstName", "LastName", "Email"], // Customize based on your required fields
     referenceFields: {
       // Add reference field configurations if needed
       // Example:
@@ -103,6 +98,7 @@ export const FORM_CONFIGS = {
         return `application-${Date.now()}`;
       }
     },
-    generateSubmissionDateTime: () => new Date().toISOString(),
+    // Don't add automatic date fields unless they exist in your CMS schema
+    addAutomaticFields: false,
   },
 };
