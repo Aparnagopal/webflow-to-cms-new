@@ -67,6 +67,7 @@ export const FORM_CONFIGS = {
       Zip: "zip",
       CurrentAddressCheckbox: "current-address-checkbox",
       ResidencyDuration: "residency-duration",
+      ApplicationStatus: "Draft",
       FundingOpportunities: "funding-opportunities",
       FundingTerm: "funding-term",
       EmploymentStatus: "employment-status",
