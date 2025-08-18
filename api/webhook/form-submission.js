@@ -40,19 +40,16 @@ const FORM_CONFIGS = {
     generateMessageDateTime: () => new Date().toISOString(),
   },
 
-  /// General Applications form - UPDATED WITH DEBUGGING AND FLEXIBLE MAPPING
+  /// General Applications form - WITH UPDATE EXISTING RECORD FUNCTIONALITY
   "680ffe82754f33838006203e": {
     name: "General Applications",
     collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID, // Using environment variable
     fieldMapping: {
-      // IMPORTANT: These field mappings may need adjustment based on actual form field names
-      // Check the logs after deployment to see the exact field names being submitted
-
       FirstName: "first-name",
       LastName: "last-name",
       Email: "email",
       Phone: "phone",
-      UserName: "name", // Changed from "user-name" to "name" (required by Webflow)
+      UserName: "name", // This is the lookup field for existing records
       DateOfBirth: "date-of-birth",
       School: "school",
       SchoolYear: "school-year",
@@ -79,10 +76,14 @@ const FORM_CONFIGS = {
       HaveDebt: "have-debt",
       TotalDebtAmount: "total-debt-amount",
     },
-    // Reduced required fields to avoid validation errors - add back as needed
     requiredFields: ["FirstName", "LastName", "Email"],
-    referenceFields: {
-      // Add reference field configurations if needed
+    referenceFields: {},
+    // Configuration for checking and updating existing records
+    updateExistingRecord: {
+      enabled: true,
+      lookupField: "name", // Field to search by (maps to UserName)
+      statusField: "application-status", // Field to check status
+      statusValue: "Draft", // Only update records with this status
     },
     generateSlug: (data) => {
       try {
@@ -99,7 +100,6 @@ const FORM_CONFIGS = {
         return `application-${Date.now()}`;
       }
     },
-    // Don't add automatic date fields unless they exist in your CMS schema
     addAutomaticFields: false,
   },
 };
@@ -171,6 +171,96 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   } catch (error) {
     console.error(
       `[${timestamp}] Error looking up reference item:`,
+      error.message
+    );
+    return null;
+  }
+}
+
+// NEW FUNCTION: Check for existing record that can be updated
+async function checkForExistingRecord(
+  userName,
+  updateConfig,
+  collectionId,
+  apiKey,
+  timestamp
+) {
+  try {
+    console.log(
+      `[${timestamp}] Checking for existing record with name: "${userName}" and status: "${updateConfig.statusValue}"`
+    );
+
+    if (!updateConfig.enabled) {
+      console.log(`[${timestamp}] Update existing record not enabled`);
+      return null;
+    }
+
+    const response = await fetch(
+      `https://api.webflow.com/v2/collections/${collectionId}/items`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+        },
+      }
+    );
+
+    console.log(
+      `[${timestamp}] Existing record lookup response status: ${response.status}`
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `[${timestamp}] Failed to fetch existing records: ${response.status} - ${errorText}`
+      );
+      return null;
+    }
+
+    const data = await response.json();
+    const items = data.items || [];
+
+    console.log(`[${timestamp}] Found ${items.length} items in collection`);
+
+    // Look for item with matching name and Draft status
+    const existingItem = items.find((item) => {
+      const nameValue = item.fieldData[updateConfig.lookupField];
+      const statusValue = item.fieldData[updateConfig.statusField];
+
+      if (!nameValue) return false;
+
+      const nameMatch =
+        nameValue.toLowerCase().trim() === userName.toLowerCase().trim();
+      const statusMatch =
+        statusValue &&
+        statusValue.toLowerCase().trim() ===
+          updateConfig.statusValue.toLowerCase().trim();
+
+      console.log(
+        `[${timestamp}] Checking item ${item.id}: name="${nameValue}" (match: ${nameMatch}), status="${statusValue}" (match: ${statusMatch})`
+      );
+
+      return nameMatch && statusMatch;
+    });
+
+    if (existingItem) {
+      console.log(
+        `[${timestamp}] Found existing Draft record: ${existingItem.id} for "${userName}"`
+      );
+      return {
+        id: existingItem.id,
+        item: existingItem,
+        canUpdate: true,
+      };
+    }
+
+    console.log(
+      `[${timestamp}] No existing Draft record found for: "${userName}"`
+    );
+    return null;
+  } catch (error) {
+    console.error(
+      `[${timestamp}] Error checking for existing record:`,
       error.message
     );
     return null;
@@ -499,7 +589,7 @@ export default async function handler(req, res) {
         error: "Unknown form ID",
         formId,
         supportedForms: Object.keys(FORM_CONFIGS),
-        availableFormFields: Object.keys(formData), // Added for debugging
+        availableFormFields: Object.keys(formData),
         timestamp,
       });
     }
@@ -702,30 +792,92 @@ export default async function handler(req, res) {
       console.log(`[${timestamp}] Generated name field: ${extractedData.name}`);
     }
 
-    // Create CMS payload - REMOVED AUTOMATIC FIELD ADDITION
-    const payload = {
-      items: [
-        {
-          isArchived: false,
-          isDraft: true, // Create as draft first
-          fieldData: {
-            ...extractedData,
-            slug: slug,
-            // REMOVED: "submission-date-time": submissionDateTime - only add fields that exist in your CMS schema
+    // NEW LOGIC: Check for existing record to update (only for General Applications)
+    let existingRecord = null;
+    let isUpdate = false;
+
+    if (
+      formConfig.updateExistingRecord &&
+      formConfig.updateExistingRecord.enabled &&
+      extractedData.name
+    ) {
+      existingRecord = await checkForExistingRecord(
+        extractedData.name,
+        formConfig.updateExistingRecord,
+        formConfig.collectionId,
+        process.env.WEBFLOW_API_KEY,
+        timestamp
+      );
+
+      if (existingRecord && existingRecord.canUpdate) {
+        isUpdate = true;
+        console.log(
+          `[${timestamp}] Will update existing record: ${existingRecord.id}`
+        );
+      } else {
+        console.log(`[${timestamp}] Will create new record`);
+      }
+    }
+
+    // Create payload for either CREATE or UPDATE
+    let payload;
+    let webflowResponse;
+
+    if (isUpdate && existingRecord) {
+      // UPDATE existing record
+      payload = {
+        items: [
+          {
+            id: existingRecord.id,
+            isArchived: false,
+            isDraft: true, // Keep as draft
+            fieldData: {
+              ...existingRecord.item.fieldData, // Keep existing data
+              ...extractedData, // Override with new form data
+              slug: existingRecord.item.fieldData.slug || slug, // Keep existing slug or use new one
+            },
           },
-        },
-      ],
-    };
+        ],
+      };
 
-    console.log(
-      `[${timestamp}] CMS payload:`,
-      JSON.stringify(payload, null, 2)
-    );
+      console.log(
+        `[${timestamp}] UPDATE payload:`,
+        JSON.stringify(payload, null, 2)
+      );
 
-    // Send to Webflow CMS
-    try {
-      console.log(`[${timestamp}] Making request to Webflow API...`);
-      const webflowResponse = await fetch(
+      webflowResponse = await fetch(
+        `https://api.webflow.com/v2/collections/${formConfig.collectionId}/items`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${process.env.WEBFLOW_API_KEY}`,
+            "accept-version": "2.0.0",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      );
+    } else {
+      // CREATE new record
+      payload = {
+        items: [
+          {
+            isArchived: false,
+            isDraft: true,
+            fieldData: {
+              ...extractedData,
+              slug: slug,
+            },
+          },
+        ],
+      };
+
+      console.log(
+        `[${timestamp}] CREATE payload:`,
+        JSON.stringify(payload, null, 2)
+      );
+
+      webflowResponse = await fetch(
         `https://api.webflow.com/v2/collections/${formConfig.collectionId}/items`,
         {
           method: "POST",
@@ -737,7 +889,15 @@ export default async function handler(req, res) {
           body: JSON.stringify(payload),
         }
       );
+    }
 
+    // Handle API response
+    try {
+      console.log(
+        `[${timestamp}] Making ${
+          isUpdate ? "UPDATE" : "CREATE"
+        } request to Webflow API...`
+      );
       console.log(
         `[${timestamp}] Webflow API response status:`,
         webflowResponse.status
@@ -748,32 +908,36 @@ export default async function handler(req, res) {
         console.error(`[${timestamp}] Webflow API error:`, errorData);
 
         return res.status(webflowResponse.status).json({
-          error: "Failed to create CMS item",
+          error: `Failed to ${isUpdate ? "update" : "create"} CMS item`,
           formName: formConfig.name,
           collectionId: formConfig.collectionId,
           details: errorData,
-          availableFormFields: Object.keys(formData), // Added for debugging
-          configuredFieldMappings: formConfig.fieldMapping, // Added for debugging
-          extractedData: extractedData, // Added for debugging
+          availableFormFields: Object.keys(formData),
+          configuredFieldMappings: formConfig.fieldMapping,
+          extractedData: extractedData,
+          isUpdate: isUpdate,
+          existingRecordId: existingRecord?.id,
           timestamp,
         });
       }
 
       const responseData = await webflowResponse.json();
-      console.log(`[${timestamp}] CMS item created successfully`);
+      console.log(
+        `[${timestamp}] CMS item ${
+          isUpdate ? "updated" : "created"
+        } successfully`
+      );
 
-      // Get the created item ID
-      const createdItemId = responseData.items?.[0]?.id;
+      // Get the item ID (for updates, it's the existing ID; for creates, it's the new ID)
+      const itemId = isUpdate ? existingRecord.id : responseData.items?.[0]?.id;
       let publishResult = { success: false };
       let studentUpdateResult = { success: false };
 
-      // Try to publish the specific item using bulk publish endpoint
-      if (createdItemId) {
-        console.log(
-          `[${timestamp}] Attempting to publish item: ${createdItemId}`
-        );
+      // Try to publish the item
+      if (itemId) {
+        console.log(`[${timestamp}] Attempting to publish item: ${itemId}`);
         publishResult = await publishCmsItems(
-          [createdItemId],
+          [itemId],
           formConfig.collectionId,
           process.env.WEBFLOW_API_KEY,
           timestamp
@@ -786,13 +950,13 @@ export default async function handler(req, res) {
         ) {
           const studentName = formData.StudentProfile;
 
-          if (studentName && createdItemId) {
+          if (studentName && itemId) {
             console.log(
-              `[${timestamp}] Updating student "${studentName}" with donor comment ID "${createdItemId}"`
+              `[${timestamp}] Updating student "${studentName}" with donor comment ID "${itemId}"`
             );
             studentUpdateResult = await updateStudentRecord(
               studentName,
-              createdItemId,
+              itemId,
               formConfig.updateStudentRecord,
               process.env.WEBFLOW_API_KEY,
               timestamp
@@ -836,13 +1000,14 @@ export default async function handler(req, res) {
         }
       } else {
         console.log(
-          `[${timestamp}] No item ID found in response, cannot publish or update student`
+          `[${timestamp}] No item ID found in response, cannot publish`
         );
       }
 
       res.status(200).json({
         success: true,
         message: `${formConfig.name} submission processed successfully`,
+        action: isUpdate ? "updated" : "created",
         formId,
         formName: formConfig.name,
         data: responseData,
@@ -850,8 +1015,10 @@ export default async function handler(req, res) {
         skippedFields: skippedFields,
         publishResult: publishResult,
         studentUpdateResult: studentUpdateResult,
-        itemId: createdItemId,
-        availableFormFields: Object.keys(formData), // Added for debugging
+        itemId: itemId,
+        isUpdate: isUpdate,
+        existingRecordId: existingRecord?.id,
+        availableFormFields: Object.keys(formData),
         timestamp,
       });
     } catch (apiError) {
