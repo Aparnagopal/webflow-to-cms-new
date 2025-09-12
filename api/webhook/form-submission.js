@@ -40,7 +40,7 @@ const FORM_CONFIGS = {
     generateMessageDateTime: () => new Date().toISOString(),
   },
 
-  /// General Applications form - WITH UPDATE EXISTING RECORD FUNCTIONALITY
+  /// General Applications form - WITH SUBMITTED STATUS OVERRIDE
   "680ffe82754f33838006203e": {
     name: "General Applications",
     collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID, // Using environment variable
@@ -66,7 +66,7 @@ const FORM_CONFIGS = {
       Zip: "zip",
       CurrentAddressCheckbox: "current-address-checkbox",
       ResidencyDuration: "residency-duration",
-      ApplicationStatus: "application-status",
+      ApplicationStatus: "application-status", // This will be overridden to "Submitted"
       FundingOpportunities: "funding-opportunities",
       FundingTerm: "funding-term",
       EmploymentStatus: "employment-status",
@@ -102,6 +102,12 @@ const FORM_CONFIGS = {
       lookupField: "name", // Field to search by (maps to UserName)
       statusField: "application-status", // Field to check status
       statusValue: "Draft", // Only update records with this status
+    },
+    // NEW: Configuration for status override
+    statusOverride: {
+      enabled: true,
+      field: "application-status", // Field to override
+      value: "Submitted", // Value to set when form is submitted
     },
     generateSlug: (data) => {
       try {
@@ -746,6 +752,16 @@ export default async function handler(req, res) {
         }
       }
 
+      // NEW: Apply status override for General Applications form
+      if (formConfig.statusOverride && formConfig.statusOverride.enabled) {
+        const originalStatus = extractedData[formConfig.statusOverride.field];
+        extractedData[formConfig.statusOverride.field] =
+          formConfig.statusOverride.value;
+        console.log(
+          `[${timestamp}] STATUS OVERRIDE: Changed ${formConfig.statusOverride.field} from "${originalStatus}" to "${formConfig.statusOverride.value}"`
+        );
+      }
+
       console.log(`[${timestamp}] Extracted data:`, extractedData);
       if (skippedFields.length > 0) {
         console.log(`[${timestamp}] Skipped fields:`, skippedFields);
@@ -842,16 +858,16 @@ export default async function handler(req, res) {
     let webflowResponse;
 
     if (isUpdate && existingRecord) {
-      // UPDATE existing record
+      // UPDATE existing record - SET TO PUBLISHED STATUS
       payload = {
         items: [
           {
             id: existingRecord.id,
             isArchived: false,
-            isDraft: true, // Keep as draft
+            isDraft: false, // CHANGED: Set to published when submitting
             fieldData: {
               ...existingRecord.item.fieldData, // Keep existing data
-              ...extractedData, // Override with new form data
+              ...extractedData, // Override with new form data (including "Submitted" status)
               slug: existingRecord.item.fieldData.slug || slug, // Keep existing slug or use new one
             },
           },
@@ -876,14 +892,14 @@ export default async function handler(req, res) {
         }
       );
     } else {
-      // CREATE new record
+      // CREATE new record - SET TO PUBLISHED STATUS
       payload = {
         items: [
           {
             isArchived: false,
-            isDraft: true,
+            isDraft: false, // CHANGED: Set to published when submitting
             fieldData: {
-              ...extractedData,
+              ...extractedData, // Includes "Submitted" status
               slug: slug,
             },
           },
@@ -948,84 +964,73 @@ export default async function handler(req, res) {
 
       // Get the item ID (for updates, it's the existing ID; for creates, it's the new ID)
       const itemId = isUpdate ? existingRecord.id : responseData.items?.[0]?.id;
-      let publishResult = { success: false };
+      const publishResult = {
+        success: true,
+        message: "Item already published",
+      }; // Since isDraft: false
       let studentUpdateResult = { success: false };
 
-      // Try to publish the item
-      if (itemId) {
-        console.log(`[${timestamp}] Attempting to publish item: ${itemId}`);
-        publishResult = await publishCmsItems(
-          [itemId],
-          formConfig.collectionId,
-          process.env.WEBFLOW_API_KEY,
-          timestamp
-        );
+      // Update student record with donor comment reference (only for donor comments form)
+      if (
+        formConfig.updateStudentRecord &&
+        formConfig.updateStudentRecord.enabled
+      ) {
+        const studentName = formData.StudentProfile;
 
-        // Update student record with donor comment reference (only for donor comments form)
-        if (
-          formConfig.updateStudentRecord &&
-          formConfig.updateStudentRecord.enabled
-        ) {
-          const studentName = formData.StudentProfile;
+        if (studentName && itemId) {
+          console.log(
+            `[${timestamp}] Updating student "${studentName}" with donor comment ID "${itemId}"`
+          );
+          studentUpdateResult = await updateStudentRecord(
+            studentName,
+            itemId,
+            formConfig.updateStudentRecord,
+            process.env.WEBFLOW_API_KEY,
+            timestamp
+          );
 
-          if (studentName && itemId) {
+          // Publish the updated student record if the update was successful
+          if (studentUpdateResult.success && studentUpdateResult.studentId) {
             console.log(
-              `[${timestamp}] Updating student "${studentName}" with donor comment ID "${itemId}"`
+              `[${timestamp}] Publishing updated student record: ${studentUpdateResult.studentId}`
             );
-            studentUpdateResult = await updateStudentRecord(
-              studentName,
-              itemId,
-              formConfig.updateStudentRecord,
+            const studentPublishResult = await publishCmsItems(
+              [studentUpdateResult.studentId],
+              formConfig.updateStudentRecord.collectionId,
               process.env.WEBFLOW_API_KEY,
               timestamp
             );
 
-            // Publish the updated student record if the update was successful
-            if (studentUpdateResult.success && studentUpdateResult.studentId) {
+            // Add student publish result to the response
+            studentUpdateResult.publishResult = studentPublishResult;
+
+            if (studentPublishResult.success) {
               console.log(
-                `[${timestamp}] Publishing updated student record: ${studentUpdateResult.studentId}`
+                `[${timestamp}] Student record published successfully`
               );
-              const studentPublishResult = await publishCmsItems(
-                [studentUpdateResult.studentId],
-                formConfig.updateStudentRecord.collectionId,
-                process.env.WEBFLOW_API_KEY,
-                timestamp
+            } else {
+              console.log(
+                `[${timestamp}] Failed to publish student record:`,
+                studentPublishResult.error
               );
-
-              // Add student publish result to the response
-              studentUpdateResult.publishResult = studentPublishResult;
-
-              if (studentPublishResult.success) {
-                console.log(
-                  `[${timestamp}] Student record published successfully`
-                );
-              } else {
-                console.log(
-                  `[${timestamp}] Failed to publish student record:`,
-                  studentPublishResult.error
-                );
-              }
             }
-          } else {
-            console.log(
-              `[${timestamp}] Missing student name or donor comment ID for update`
-            );
-            studentUpdateResult = {
-              success: false,
-              reason: "Missing student name or donor comment ID",
-            };
           }
+        } else {
+          console.log(
+            `[${timestamp}] Missing student name or donor comment ID for update`
+          );
+          studentUpdateResult = {
+            success: false,
+            reason: "Missing student name or donor comment ID",
+          };
         }
-      } else {
-        console.log(
-          `[${timestamp}] No item ID found in response, cannot publish`
-        );
       }
 
       res.status(200).json({
         success: true,
         message: `${formConfig.name} submission processed successfully`,
         action: isUpdate ? "updated" : "created",
+        status: "Submitted", // Always "Submitted" when form is submitted
         formId,
         formName: formConfig.name,
         data: responseData,
