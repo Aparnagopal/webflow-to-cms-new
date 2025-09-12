@@ -41,7 +41,7 @@ export const FORM_CONFIGS = {
   },
 
   /// General Applications form
-  "680ffe82754f33838006203e": {
+  "682602bb5760376d719623dc": {
     name: "General Applications",
     collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID, // Using environment variable
     fieldMapping: {
