@@ -91,6 +91,9 @@ export const FORM_CONFIGS = {
       AffirmationCheck: "affirmation-check",
       DisclosureSignedName: "disclosure-signed-name",
       DisclosureSignedDate: "disclosure-signed-date",
+      TermsAcceptanceCheck: "terms-acceptance-check",
+      FormSignedName: "form-signed-name",
+      FormSignedDate: "form-signed-date",
     },
     requiredFields: ["FirstName", "LastName", "Email"], // Customize based on your required fields
     referenceFields: {
