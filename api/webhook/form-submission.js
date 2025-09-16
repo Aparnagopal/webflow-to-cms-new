@@ -1083,10 +1083,29 @@ export default async function handler(req, res) {
 
       // Get the item ID (for updates, it's the existing ID; for creates, it's the new ID)
       const itemId = isUpdate ? existingRecord.id : responseData.items?.[0]?.id;
-      const publishResult = {
-        success: true,
-        message: "Item already published",
-      }; // Since isDraft: false
+      // EXPLICIT PUBLISHING: Publish the CMS item immediately after creation/update
+      let publishResult = { success: false };
+      if (itemId) {
+        console.log(`[${timestamp}] Publishing CMS item: ${itemId}`);
+        publishResult = await publishCmsItems(
+          [itemId],
+          formConfig.collectionId,
+          process.env.WEBFLOW_API_KEY,
+          timestamp
+        );
+
+        if (publishResult.success) {
+          console.log(`[${timestamp}] CMS item published successfully`);
+        } else {
+          console.error(
+            `[${timestamp}] Failed to publish CMS item:`,
+            publishResult.error
+          );
+        }
+      } else {
+        console.error(`[${timestamp}] No item ID found for publishing`);
+        publishResult = { success: false, error: "No item ID found" };
+      }
       let studentUpdateResult = { success: false };
 
       // Update student record with donor comment reference (only for donor comments form)
