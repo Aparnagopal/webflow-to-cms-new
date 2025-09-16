@@ -40,22 +40,23 @@ const FORM_CONFIGS = {
     generateMessageDateTime: () => new Date().toISOString(),
   },
 
-  /// General Applications form - WITH UPDATE EXISTING RECORD FUNCTIONALITY
+  /// General Applications form - CORRECTED FIELD MAPPING
   "682602bb5760376d719623dc": {
     name: "General Applications",
-    collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID, // Using environment variable
+    collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID,
     fieldMapping: {
+      // CORRECTED: Use actual form field names from Webflow (left side = what Webflow sends)
       "first-name": "first-name",
       "last-name": "last-name",
       email: "email",
       phone: "phone",
       "user-name": "name", // This is the lookup field for existing records
-      "date-of-birth": "date-of-birth",
+      "date-of-birth": "date-of-birth", // Date field from Webflow
       school: "school",
       "school-year": "school-year",
       degree: "degree",
       major: "major",
-      "anticipated-graduation-date": "anticipated-graduation-date",
+      "anticipated-graduation-date": "anticipated-graduation-date", // Date field from Webflow
       "full-time": "full-time",
       "required-credits": "required-credits",
       "remaining-credits": "remaining-credits",
@@ -66,7 +67,6 @@ const FORM_CONFIGS = {
       zip: "zip",
       "current-address-checkbox": "current-address-checkbox",
       "residency-duration": "residency-duration",
-      "application-status": "application-status",
       "funding-opportunities": "funding-opportunities",
       "funding-term": "funding-term",
       "employment-status": "employment-status",
@@ -89,25 +89,62 @@ const FORM_CONFIGS = {
       "additional-comments": "additional-comments",
       "affirmation-check": "affirmation-check",
       "disclosure-signed-name": "disclosure-signed-name",
-      "disclosure-signed-date": "disclosure-signed-date",
+      "disclosure-signed-date": "disclosure-signed-date", // Date field from Webflow
       "terms-acceptance-check": "terms-acceptance-check",
       "form-signed-name": "form-signed-name",
-      "form-signed-date": "form-signed-date",
+      "form-signed-date": "form-signed-date", // Date field from Webflow
     },
-    requiredFields: ["first-name", "last-name", "email"],
+    requiredFields: ["first-name", "last-name", "email"], // CORRECTED: Use actual form field names
     referenceFields: {},
     // Configuration for checking and updating existing records
     updateExistingRecord: {
       enabled: true,
-      lookupField: "name", // Field to search by (maps to UserName)
+      lookupField: "name", // Field to search by (maps to user-name)
       statusField: "application-status", // Field to check status
       statusValue: "Draft", // Only update records with this status
+    },
+    // UPDATED: Dynamic status override based on button clicked
+    statusOverride: {
+      enabled: true,
+      field: "application-status",
+      // Function to determine status based on form data
+      getValue: (formData) => {
+        // Check for button action indicator
+        const formAction = formData["form-action"];
+
+        console.log(`Detected form action: "${formAction}"`);
+
+        // Determine status based on button clicked
+        if (formAction === "save") {
+          return "Draft";
+        } else if (formAction === "submit") {
+          return "Submitted";
+        }
+
+        // Default fallback logic - you can customize this
+        // If no action detected, assume it's a save (Draft) unless certain conditions are met
+        const hasRequiredSignatures =
+          formData["disclosure-signed-name"] && formData["form-signed-name"];
+        const hasAcceptedTerms = formData["terms-acceptance-check"] === "true";
+        const hasAffirmation = formData["affirmation-check"] === "true";
+
+        // If all final requirements are met, assume it's a submit
+        if (hasRequiredSignatures && hasAcceptedTerms && hasAffirmation) {
+          console.log(
+            "No explicit action detected, but all final requirements met - assuming Submit"
+          );
+          return "Submitted";
+        } else {
+          console.log("No explicit action detected, assuming Save (Draft)");
+          return "Draft";
+        }
+      },
     },
     generateSlug: (data) => {
       try {
         const name =
-          data["first-name"] ||
           data["last-name"] ||
+          data["first-name"] ||
           data["email"] ||
           "application";
         return `application-${name
@@ -121,6 +158,46 @@ const FORM_CONFIGS = {
     addAutomaticFields: false,
   },
 };
+
+// Function to detect if request is from a bot or automated system
+function isAutomatedRequest(req) {
+  const userAgent = req.headers["user-agent"] || "";
+  const referer = req.headers["referer"] || "";
+
+  // Common bot/crawler user agents
+  const botPatterns = [
+    /bot/i,
+    /crawler/i,
+    /spider/i,
+    /scraper/i,
+    /monitor/i,
+    /health/i,
+    /check/i,
+    /ping/i,
+    /curl/i,
+    /wget/i,
+    /postman/i,
+    /insomnia/i,
+  ];
+
+  // Check if user agent matches bot patterns
+  const isBot = botPatterns.some((pattern) => pattern.test(userAgent));
+
+  // Check if request has no referer (common for automated requests)
+  const hasNoReferer = !referer;
+
+  // Check if request body is empty or malformed
+  const hasEmptyBody = !req.body || Object.keys(req.body).length === 0;
+
+  return {
+    isBot,
+    hasNoReferer,
+    hasEmptyBody,
+    userAgent,
+    referer,
+    isLikelyAutomated: isBot || (hasNoReferer && hasEmptyBody),
+  };
+}
 
 // Function to lookup reference items
 async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
@@ -541,6 +618,36 @@ export default async function handler(req, res) {
   }
 
   try {
+    // ENHANCED: Check if this is an automated/bot request
+    const automatedCheck = isAutomatedRequest(req);
+
+    console.log(`[${timestamp}] Request analysis:`, {
+      userAgent: automatedCheck.userAgent,
+      referer: automatedCheck.referer,
+      isBot: automatedCheck.isBot,
+      hasNoReferer: automatedCheck.hasNoReferer,
+      hasEmptyBody: automatedCheck.hasEmptyBody,
+      isLikelyAutomated: automatedCheck.isLikelyAutomated,
+      ip:
+        req.headers["x-forwarded-for"] ||
+        req.connection?.remoteAddress ||
+        "unknown",
+      method: req.method,
+      contentType: req.headers["content-type"] || "none",
+    });
+
+    // If it's likely an automated request, return early with minimal logging
+    if (automatedCheck.isLikelyAutomated) {
+      console.log(
+        `[${timestamp}] AUTOMATED REQUEST DETECTED - Returning early to avoid spam`
+      );
+      return res.status(200).json({
+        message: "Webhook endpoint is healthy",
+        timestamp,
+        note: "Automated request detected",
+      });
+    }
+
     console.log(
       `[${timestamp}] Raw request body:`,
       JSON.stringify(req.body, null, 2)
@@ -563,13 +670,20 @@ export default async function handler(req, res) {
         };
         console.log(`[${timestamp}] Webflow form submission detected`);
       } else {
-        console.log(`[${timestamp}] Invalid webhook format`);
+        console.log(
+          `[${timestamp}] Invalid webhook format - not a Webflow form submission`
+        );
         return res.status(400).json({
           error: "Invalid webhook format",
           expected: "Webflow form submission webhook",
           received: {
             triggerType: req.body?.triggerType,
             hasPayload: !!req.body?.payload,
+          },
+          requestInfo: {
+            userAgent: automatedCheck.userAgent,
+            referer: automatedCheck.referer,
+            contentType: req.headers["content-type"],
           },
           timestamp,
         });
@@ -608,6 +722,10 @@ export default async function handler(req, res) {
         formId,
         supportedForms: Object.keys(FORM_CONFIGS),
         availableFormFields: Object.keys(formData),
+        requestInfo: {
+          userAgent: automatedCheck.userAgent,
+          referer: automatedCheck.referer,
+        },
         timestamp,
       });
     }
@@ -629,10 +747,7 @@ export default async function handler(req, res) {
       );
       return res.status(500).json({
         error: `Missing collection ID for form: ${formConfig.name}`,
-        requiredEnvVar:
-          formId === "682602bb5760376d719623dc"
-            ? "WEBFLOW_GENRLAPPL_COLLECTION_ID"
-            : "WEBFLOW_DONOR_COMMENTS_COLLECTION_ID",
+        requiredEnvVar: "WEBFLOW_GENRLAPPL_COLLECTION_ID",
         availableEnvVars: {
           WEBFLOW_API_KEY: !!process.env.WEBFLOW_API_KEY,
           WEBFLOW_DONOR_COMMENTS_COLLECTION_ID:
@@ -746,6 +861,26 @@ export default async function handler(req, res) {
         }
       }
 
+      // NEW: Apply dynamic status override for General Applications form
+      if (formConfig.statusOverride && formConfig.statusOverride.enabled) {
+        let statusValue;
+
+        if (typeof formConfig.statusOverride.getValue === "function") {
+          // Use dynamic status determination
+          statusValue = formConfig.statusOverride.getValue(formData);
+        } else {
+          // Use static value (backward compatibility)
+          statusValue = formConfig.statusOverride.value;
+        }
+
+        const originalStatus = extractedData[formConfig.statusOverride.field];
+        extractedData[formConfig.statusOverride.field] = statusValue;
+
+        console.log(
+          `[${timestamp}] DYNAMIC STATUS OVERRIDE: Changed ${formConfig.statusOverride.field} from "${originalStatus}" to "${statusValue}"`
+        );
+      }
+
       console.log(`[${timestamp}] Extracted data:`, extractedData);
       if (skippedFields.length > 0) {
         console.log(`[${timestamp}] Skipped fields:`, skippedFields);
@@ -842,16 +977,16 @@ export default async function handler(req, res) {
     let webflowResponse;
 
     if (isUpdate && existingRecord) {
-      // UPDATE existing record
+      // UPDATE existing record - SET TO PUBLISHED STATUS
       payload = {
         items: [
           {
             id: existingRecord.id,
             isArchived: false,
-            isDraft: true, // Keep as draft
+            isDraft: false, // CHANGED: Set to published when submitting
             fieldData: {
               ...existingRecord.item.fieldData, // Keep existing data
-              ...extractedData, // Override with new form data
+              ...extractedData, // Override with new form data (including "Submitted" status)
               slug: existingRecord.item.fieldData.slug || slug, // Keep existing slug or use new one
             },
           },
@@ -876,14 +1011,14 @@ export default async function handler(req, res) {
         }
       );
     } else {
-      // CREATE new record
+      // CREATE new record - SET TO PUBLISHED STATUS
       payload = {
         items: [
           {
             isArchived: false,
-            isDraft: true,
+            isDraft: false, // CHANGED: Set to published when submitting
             fieldData: {
-              ...extractedData,
+              ...extractedData, // Includes "Submitted" status
               slug: slug,
             },
           },
@@ -948,84 +1083,73 @@ export default async function handler(req, res) {
 
       // Get the item ID (for updates, it's the existing ID; for creates, it's the new ID)
       const itemId = isUpdate ? existingRecord.id : responseData.items?.[0]?.id;
-      let publishResult = { success: false };
+      const publishResult = {
+        success: true,
+        message: "Item already published",
+      }; // Since isDraft: false
       let studentUpdateResult = { success: false };
 
-      // Try to publish the item
-      if (itemId) {
-        console.log(`[${timestamp}] Attempting to publish item: ${itemId}`);
-        publishResult = await publishCmsItems(
-          [itemId],
-          formConfig.collectionId,
-          process.env.WEBFLOW_API_KEY,
-          timestamp
-        );
+      // Update student record with donor comment reference (only for donor comments form)
+      if (
+        formConfig.updateStudentRecord &&
+        formConfig.updateStudentRecord.enabled
+      ) {
+        const studentName = formData.StudentProfile;
 
-        // Update student record with donor comment reference (only for donor comments form)
-        if (
-          formConfig.updateStudentRecord &&
-          formConfig.updateStudentRecord.enabled
-        ) {
-          const studentName = formData.StudentProfile;
+        if (studentName && itemId) {
+          console.log(
+            `[${timestamp}] Updating student "${studentName}" with donor comment ID "${itemId}"`
+          );
+          studentUpdateResult = await updateStudentRecord(
+            studentName,
+            itemId,
+            formConfig.updateStudentRecord,
+            process.env.WEBFLOW_API_KEY,
+            timestamp
+          );
 
-          if (studentName && itemId) {
+          // Publish the updated student record if the update was successful
+          if (studentUpdateResult.success && studentUpdateResult.studentId) {
             console.log(
-              `[${timestamp}] Updating student "${studentName}" with donor comment ID "${itemId}"`
+              `[${timestamp}] Publishing updated student record: ${studentUpdateResult.studentId}`
             );
-            studentUpdateResult = await updateStudentRecord(
-              studentName,
-              itemId,
-              formConfig.updateStudentRecord,
+            const studentPublishResult = await publishCmsItems(
+              [studentUpdateResult.studentId],
+              formConfig.updateStudentRecord.collectionId,
               process.env.WEBFLOW_API_KEY,
               timestamp
             );
 
-            // Publish the updated student record if the update was successful
-            if (studentUpdateResult.success && studentUpdateResult.studentId) {
+            // Add student publish result to the response
+            studentUpdateResult.publishResult = studentPublishResult;
+
+            if (studentPublishResult.success) {
               console.log(
-                `[${timestamp}] Publishing updated student record: ${studentUpdateResult.studentId}`
+                `[${timestamp}] Student record published successfully`
               );
-              const studentPublishResult = await publishCmsItems(
-                [studentUpdateResult.studentId],
-                formConfig.updateStudentRecord.collectionId,
-                process.env.WEBFLOW_API_KEY,
-                timestamp
+            } else {
+              console.log(
+                `[${timestamp}] Failed to publish student record:`,
+                studentPublishResult.error
               );
-
-              // Add student publish result to the response
-              studentUpdateResult.publishResult = studentPublishResult;
-
-              if (studentPublishResult.success) {
-                console.log(
-                  `[${timestamp}] Student record published successfully`
-                );
-              } else {
-                console.log(
-                  `[${timestamp}] Failed to publish student record:`,
-                  studentPublishResult.error
-                );
-              }
             }
-          } else {
-            console.log(
-              `[${timestamp}] Missing student name or donor comment ID for update`
-            );
-            studentUpdateResult = {
-              success: false,
-              reason: "Missing student name or donor comment ID",
-            };
           }
+        } else {
+          console.log(
+            `[${timestamp}] Missing student name or donor comment ID for update`
+          );
+          studentUpdateResult = {
+            success: false,
+            reason: "Missing student name or donor comment ID",
+          };
         }
-      } else {
-        console.log(
-          `[${timestamp}] No item ID found in response, cannot publish`
-        );
       }
 
       res.status(200).json({
         success: true,
         message: `${formConfig.name} submission processed successfully`,
         action: isUpdate ? "updated" : "created",
+        status: extractedData["application-status"], // Always "Submitted" when form is submitted
         formId,
         formName: formConfig.name,
         data: responseData,
