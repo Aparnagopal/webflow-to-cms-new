@@ -45,56 +45,56 @@ const FORM_CONFIGS = {
     name: "General Applications",
     collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID, // Using environment variable
     fieldMapping: {
-      FirstName: "first-name",
-      LastName: "last-name",
-      Email: "email",
-      Phone: "phone",
-      UserName: "name", // This is the lookup field for existing records
-      DateOfBirth: "date-of-birth",
-      School: "school",
-      SchoolYear: "school-year",
-      Degree: "degree",
-      Major: "major",
-      AnticipatedGraduationDate: "anticipated-graduation-date",
-      FullTime: "full-time",
-      RequiredCredits: "required-credits",
-      RemainingCredits: "remaining-credits",
-      GPA: "gpa",
-      Address: "address",
-      City: "city",
-      State: "state",
-      Zip: "zip",
-      CurrentAddressCheckbox: "current-address-checkbox",
-      ResidencyDuration: "residency-duration",
-      ApplicationStatus: "application-status",
-      FundingOpportunities: "funding-opportunities",
-      FundingTerm: "funding-term",
-      EmploymentStatus: "employment-status",
-      OtherSourcesofIncome: "other-sources-of-income",
-      TotalMonthlyIncome: "total-monthly-income",
-      MonthlyHousingPayment: "monthly-housing-payment",
-      HaveDebt: "have-debt",
-      TotalDebtAmount: "total-debt-amount",
-      FundingNeedStory: "funding-need-story",
-      CareerAspirationsandGoals: "career-aspirations-and-goals",
-      VolunteeringActivities: "volunteering-activities",
-      CampaignPlan: "campaign-plan",
-      DonationSupportAmount: "donation-support-amount",
-      Ethnicity: "ethnicity",
-      ResidencyStatus: "residency-status",
-      Gender: "gender",
-      DisabilityStatus: "disability-status",
-      MilitaryStatus: "military-status",
-      FirstGenStudent: "first-gen-student",
-      AdditionalComments: "additional-comments",
-      AffirmationCheck: "affirmation-check",
-      DisclosureSignedName: "disclosure-signed-name",
-      DisclosureSignedDate: "disclosure-signed-date",
-      TermsAcceptanceCheck: "terms-acceptance-check",
-      FormSignedName: "form-signed-name",
-      FormSignedDate: "form-signed-date",
+      first-name: "first-name",
+      last-name: "last-name",
+      email: "email",
+      phone: "phone",
+      user-name: "name", // This is the lookup field for existing records
+      date-of-birth: "date-of-birth",
+      school: "school",
+      school-year: "school-year",
+      degree: "degree",
+      major: "major",
+      anticipated-graduation-date: "anticipated-graduation-date",
+      full-time: "full-time",
+      required-credits: "required-credits",
+      remaining-credits: "remaining-credits",
+      gpa: "gpa",
+      address: "address",
+      city: "city",
+      state: "state",
+      zip: "zip",
+      current-address-checkbox: "current-address-checkbox",
+      residency-duration: "residency-duration",
+      application-status: "application-status",
+      funding-opportunities: "funding-opportunities",
+      funding-term: "funding-term",
+      employment-status: "employment-status",
+      other-sources-of-income: "other-sources-of-income",
+      total-monthly-income: "total-monthly-income",
+      monthly-housing-payment: "monthly-housing-payment",
+      have-debt: "have-debt",
+      total-debt-amount: "total-debt-amount",
+      funding-need-story: "funding-need-story",
+      career-aspirations-and-goals: "career-aspirations-and-goals",
+      volunteering-activities: "volunteering-activities",
+      campaign-plan: "campaign-plan",
+      donation-support-amount: "donation-support-amount",
+      ethnicity: "ethnicity",
+      residency-status: "residency-status",
+      gender: "gender",
+      disability-status: "disability-status",
+      military-status: "military-status",
+      first-gen-student: "first-gen-student",
+      additional-comments: "additional-comments",
+      affirmation-check: "affirmation-check",
+      disclosure-signed-name: "disclosure-signed-name",
+      disclosure-signed-date: "disclosure-signed-date",
+      terms-acceptance-check: "terms-acceptance-check",
+      form-signed-name: "form-signed-name",
+      form-signed-date: "form-signed-date",
     },
-    requiredFields: ["FirstName", "LastName", "Email"],
+    requiredFields: ["first-name", "last-name", "email"],
     referenceFields: {},
     // Configuration for checking and updating existing records
     updateExistingRecord: {
@@ -106,9 +106,9 @@ const FORM_CONFIGS = {
     generateSlug: (data) => {
       try {
         const name =
-          data["LastName"] ||
-          data["FirstName"] ||
-          data["Email"] ||
+          data["first-name"] ||
+          data["last-name"] ||
+          data["email"] ||
           "application";
         return `application-${name
           .toLowerCase()
@@ -630,7 +630,7 @@ export default async function handler(req, res) {
       return res.status(500).json({
         error: `Missing collection ID for form: ${formConfig.name}`,
         requiredEnvVar:
-          formId === "680ffe82754f33838006203e"
+          formId === "682602bb5760376d719623dc"
             ? "WEBFLOW_GENRLAPPL_COLLECTION_ID"
             : "WEBFLOW_DONOR_COMMENTS_COLLECTION_ID",
         availableEnvVars: {
