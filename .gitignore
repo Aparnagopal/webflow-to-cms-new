@@ -1,1 +1,4 @@
 .vercel
+
+# Dependencies
+/node_modules
