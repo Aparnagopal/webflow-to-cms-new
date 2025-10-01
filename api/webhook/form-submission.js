@@ -78,6 +78,8 @@ const FORM_CONFIGS = {
       "funding-need-story": "funding-need-story",
       "career-aspirations-and-goals": "career-aspirations-and-goals",
       "volunteering-activities": "volunteering-activities",
+      "story-url": "story-url",
+      "story-video": "story-video",
       "campaign-plan": "campaign-plan",
       "donation-support-amount": "donation-support-amount",
       ethnicity: "ethnicity",
