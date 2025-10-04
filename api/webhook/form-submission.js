@@ -1,31 +1,37 @@
-// Form configuration mapping - Add your forms here
+/**
+ * Webflow multi-form webhook with:
+ * - Corrected field mappings for General Application
+ * - Dynamic status override based on "form-action"
+ * - Explicit publishing to avoid "Queued to publish"
+ * - NEW: Create Student Profile in WEBFLOW_STUDENTSCRFD_COLLECTION_ID when Application is Submitted
+ * - NEW: Automatic, precise alignment to current Student collection schema by fetching it at runtime
+ */
+
 const FORM_CONFIGS = {
-  /// Crowd Funding Donor comments form
+  // Crowd Funding Donor comments form
   "6852c7791d84f17a29ace6f0": {
     name: "Student Crowd Funding Donor Comments",
     collectionId: process.env.WEBFLOW_DONOR_COMMENTS_COLLECTION_ID,
     fieldMapping: {
       DonorName: "name",
       DonorMessage: "donor-message",
-      StudentProfile: "student-profile", // This is a reference field
+      StudentProfile: "student-profile",
     },
     requiredFields: ["DonorName"],
     referenceFields: {
-      // Define reference field configurations
       "student-profile": {
-        collectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID, // Collection being referenced
-        lookupField: "name", // Field to search by in the referenced collection
-        createIfNotFound: false, // Whether to create new items if not found
-        fallbackToText: true, // If true, use text value when reference lookup fails
+        collectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
+        lookupField: "name",
+        createIfNotFound: false,
+        fallbackToText: true,
       },
     },
-    // Configuration for updating student records with multi-reference
     updateStudentRecord: {
       enabled: true,
       collectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
-      lookupField: "name", // Field to find the student by
-      updateField: "donor-message", // Multi-reference field to update in student record (note: hyphen, not underscore)
-      isMultiReference: true, // This is a multi-reference field
+      lookupField: "name",
+      updateField: "donor-message",
+      isMultiReference: true,
     },
     generateSlug: (data) => {
       try {
@@ -33,30 +39,29 @@ const FORM_CONFIGS = {
         return `donor-${donorName
           .toLowerCase()
           .replace(/\s+/g, "-")}-${Date.now()}`;
-      } catch (error) {
+      } catch {
         return `donor-submission-${Date.now()}`;
       }
     },
     generateMessageDateTime: () => new Date().toISOString(),
   },
 
-  /// General Applications form - CORRECTED FIELD MAPPING
+  // General Applications form
   "682602bb5760376d719623dc": {
     name: "General Applications",
     collectionId: process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID,
     fieldMapping: {
-      // CORRECTED: Use actual form field names from Webflow (left side = what Webflow sends)
       "first-name": "first-name",
       "last-name": "last-name",
       email: "email",
       phone: "phone",
-      "user-name": "name", // This is the lookup field for existing records
-      "date-of-birth": "date-of-birth", // Date field from Webflow
+      "user-name": "name", // the CMS "name" field will store the "user-name" for lookup
+      "date-of-birth": "date-of-birth",
       school: "school",
       "school-year": "school-year",
       degree: "degree",
       major: "major",
-      "anticipated-graduation-date": "anticipated-graduation-date", // Date field from Webflow
+      "anticipated-graduation-date": "anticipated-graduation-date",
       "full-time": "full-time",
       "required-credits": "required-credits",
       "remaining-credits": "remaining-credits",
@@ -91,55 +96,34 @@ const FORM_CONFIGS = {
       "additional-comments": "additional-comments",
       "affirmation-check": "affirmation-check",
       "disclosure-signed-name": "disclosure-signed-name",
-      "disclosure-signed-date": "disclosure-signed-date", // Date field from Webflow
+      "disclosure-signed-date": "disclosure-signed-date",
       "terms-acceptance-check": "terms-acceptance-check",
       "form-signed-name": "form-signed-name",
-      "form-signed-date": "form-signed-date", // Date field from Webflow
+      "form-signed-date": "form-signed-date",
     },
-    requiredFields: ["first-name", "last-name", "email"], // CORRECTED: Use actual form field names
+    requiredFields: ["first-name", "last-name", "email"],
     referenceFields: {},
-    // Configuration for checking and updating existing records
     updateExistingRecord: {
       enabled: true,
-      lookupField: "name", // Field to search by (maps to user-name)
-      statusField: "application-status", // Field to check status
-      statusValue: "Draft", // Only update records with this status
+      lookupField: "name",
+      statusField: "application-status",
+      statusValue: "Draft",
     },
-    // UPDATED: Dynamic status override based on button clicked
     statusOverride: {
       enabled: true,
       field: "application-status",
-      // Function to determine status based on form data
       getValue: (formData) => {
-        // Check for button action indicator
         const formAction = formData["form-action"];
+        if (formAction === "save") return "Draft";
+        if (formAction === "submit") return "Submitted";
 
-        console.log(`Detected form action: "${formAction}"`);
-
-        // Determine status based on button clicked
-        if (formAction === "save") {
-          return "Draft";
-        } else if (formAction === "submit") {
-          return "Submitted";
-        }
-
-        // Default fallback logic - you can customize this
-        // If no action detected, assume it's a save (Draft) unless certain conditions are met
         const hasRequiredSignatures =
           formData["disclosure-signed-name"] && formData["form-signed-name"];
         const hasAcceptedTerms = formData["terms-acceptance-check"] === "true";
         const hasAffirmation = formData["affirmation-check"] === "true";
-
-        // If all final requirements are met, assume it's a submit
-        if (hasRequiredSignatures && hasAcceptedTerms && hasAffirmation) {
-          console.log(
-            "No explicit action detected, but all final requirements met - assuming Submit"
-          );
+        if (hasRequiredSignatures && hasAcceptedTerms && hasAffirmation)
           return "Submitted";
-        } else {
-          console.log("No explicit action detected, assuming Save (Draft)");
-          return "Draft";
-        }
+        return "Draft";
       },
     },
     generateSlug: (data) => {
@@ -153,20 +137,24 @@ const FORM_CONFIGS = {
           .toLowerCase()
           .replace(/[^a-z0-9]+/g, "-")
           .replace(/^-+|-+$/g, "")}-${Date.now()}`;
-      } catch (error) {
+      } catch {
         return `application-${Date.now()}`;
       }
     },
     addAutomaticFields: false,
+    // NEW: Create Student profile when Application is Submitted
+    createStudentOnSubmit: {
+      enabled: true,
+      studentCollectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
+    },
   },
 };
 
-// Function to detect if request is from a bot or automated system
+// --- Utilities ---
+
 function isAutomatedRequest(req) {
   const userAgent = req.headers["user-agent"] || "";
   const referer = req.headers["referer"] || "";
-
-  // Common bot/crawler user agents
   const botPatterns = [
     /bot/i,
     /crawler/i,
@@ -181,16 +169,9 @@ function isAutomatedRequest(req) {
     /postman/i,
     /insomnia/i,
   ];
-
-  // Check if user agent matches bot patterns
-  const isBot = botPatterns.some((pattern) => pattern.test(userAgent));
-
-  // Check if request has no referer (common for automated requests)
+  const isBot = botPatterns.some((p) => p.test(userAgent));
   const hasNoReferer = !referer;
-
-  // Check if request body is empty or malformed
   const hasEmptyBody = !req.body || Object.keys(req.body).length === 0;
-
   return {
     isBot,
     hasNoReferer,
@@ -201,19 +182,65 @@ function isAutomatedRequest(req) {
   };
 }
 
-// Function to lookup reference items
+function sanitizeSlug(input) {
+  return String(input || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function toNumberIfPossible(value) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const n = Number(value);
+  return Number.isNaN(n) ? undefined : n;
+}
+
+async function publishCmsItems(itemIds, collectionId, apiKey, timestamp) {
+  try {
+    console.log(
+      `[${timestamp}] Publishing CMS items: ${itemIds.join(
+        ", "
+      )} in collection: ${collectionId}`
+    );
+    const response = await fetch(
+      `https://api.webflow.com/v2/collections/${collectionId}/items/publish`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ itemIds }),
+      }
+    );
+    console.log(
+      `[${timestamp}] Bulk publish response status: ${response.status}`
+    );
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `[${timestamp}] Failed to publish items: ${response.status} - ${errorText}`
+      );
+      return { success: false, error: errorText, status: response.status };
+    }
+    const publishData = await response.json();
+    console.log(`[${timestamp}] Items published successfully:`, publishData);
+    return { success: true, data: publishData };
+  } catch (error) {
+    console.error(`[${timestamp}] Error publishing items:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+// --- Reference helpers for donor comments (unchanged) ---
+
 async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   try {
     console.log(
       `[${timestamp}] Looking up reference item: "${value}" in collection: ${referenceConfig.collectionId}`
     );
-
-    if (!referenceConfig.collectionId) {
-      console.log(
-        `[${timestamp}] No collection ID provided for reference lookup`
-      );
-      return null;
-    }
+    if (!referenceConfig.collectionId) return null;
 
     const response = await fetch(
       `https://api.webflow.com/v2/collections/${referenceConfig.collectionId}/items`,
@@ -224,11 +251,9 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
         },
       }
     );
-
     console.log(
       `[${timestamp}] Reference lookup response status: ${response.status}`
     );
-
     if (!response.ok) {
       const errorText = await response.text();
       console.error(
@@ -239,32 +264,14 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
 
     const data = await response.json();
     const items = data.items || [];
-
-    console.log(
-      `[${timestamp}] Found ${items.length} items in reference collection`
-    );
-    console.log(
-      `[${timestamp}] Looking for item with ${referenceConfig.lookupField} = "${value}"`
-    );
-
-    // Look for item with matching name (case-insensitive)
     const matchingItem = items.find((item) => {
       const itemValue = item.fieldData[referenceConfig.lookupField];
-      if (!itemValue) return false;
-      return itemValue.toLowerCase().trim() === value.toLowerCase().trim();
-    });
-
-    if (matchingItem) {
-      console.log(
-        `[${timestamp}] Found matching reference item: ${matchingItem.id} for "${value}"`
+      return (
+        itemValue &&
+        itemValue.toLowerCase().trim() === String(value).toLowerCase().trim()
       );
-      return { id: matchingItem.id, item: matchingItem };
-    }
-
-    console.log(
-      `[${timestamp}] No matching reference item found for: "${value}"`
-    );
-    return null;
+    });
+    return matchingItem ? { id: matchingItem.id, item: matchingItem } : null;
   } catch (error) {
     console.error(
       `[${timestamp}] Error looking up reference item:`,
@@ -274,7 +281,6 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   }
 }
 
-// NEW FUNCTION: Check for existing record that can be updated
 async function checkForExistingRecord(
   userName,
   updateConfig,
@@ -286,11 +292,7 @@ async function checkForExistingRecord(
     console.log(
       `[${timestamp}] Checking for existing record with name: "${userName}" and status: "${updateConfig.statusValue}"`
     );
-
-    if (!updateConfig.enabled) {
-      console.log(`[${timestamp}] Update existing record not enabled`);
-      return null;
-    }
+    if (!updateConfig.enabled) return null;
 
     const response = await fetch(
       `https://api.webflow.com/v2/collections/${collectionId}/items`,
@@ -301,11 +303,9 @@ async function checkForExistingRecord(
         },
       }
     );
-
     console.log(
       `[${timestamp}] Existing record lookup response status: ${response.status}`
     );
-
     if (!response.ok) {
       const errorText = await response.text();
       console.error(
@@ -316,27 +316,17 @@ async function checkForExistingRecord(
 
     const data = await response.json();
     const items = data.items || [];
-
-    console.log(`[${timestamp}] Found ${items.length} items in collection`);
-
-    // Look for item with matching name and Draft status
     const existingItem = items.find((item) => {
       const nameValue = item.fieldData[updateConfig.lookupField];
       const statusValue = item.fieldData[updateConfig.statusField];
-
-      if (!nameValue) return false;
-
       const nameMatch =
-        nameValue.toLowerCase().trim() === userName.toLowerCase().trim();
+        nameValue &&
+        nameValue.toLowerCase().trim() ===
+          String(userName).toLowerCase().trim();
       const statusMatch =
         statusValue &&
         statusValue.toLowerCase().trim() ===
           updateConfig.statusValue.toLowerCase().trim();
-
-      console.log(
-        `[${timestamp}] Checking item ${item.id}: name="${nameValue}" (match: ${nameMatch}), status="${statusValue}" (match: ${statusMatch})`
-      );
-
       return nameMatch && statusMatch;
     });
 
@@ -344,13 +334,8 @@ async function checkForExistingRecord(
       console.log(
         `[${timestamp}] Found existing Draft record: ${existingItem.id} for "${userName}"`
       );
-      return {
-        id: existingItem.id,
-        item: existingItem,
-        canUpdate: true,
-      };
+      return { id: existingItem.id, item: existingItem, canUpdate: true };
     }
-
     console.log(
       `[${timestamp}] No existing Draft record found for: "${userName}"`
     );
@@ -364,7 +349,6 @@ async function checkForExistingRecord(
   }
 }
 
-// Function to update student record with donor comment reference
 async function updateStudentRecord(
   studentName,
   donorCommentId,
@@ -373,25 +357,13 @@ async function updateStudentRecord(
   timestamp
 ) {
   try {
-    console.log(
-      `[${timestamp}] Updating student record for: "${studentName}" with donor comment ID: "${donorCommentId}"`
-    );
-
     if (!updateConfig.enabled || !updateConfig.collectionId) {
-      console.log(
-        `[${timestamp}] Student record update not enabled or no collection ID`
-      );
       return { success: false, reason: "Update not enabled" };
     }
-
     if (!donorCommentId) {
-      console.log(
-        `[${timestamp}] No donor comment ID provided for student update`
-      );
       return { success: false, reason: "No donor comment ID provided" };
     }
 
-    // First, find the student record
     const response = await fetch(
       `https://api.webflow.com/v2/collections/${updateConfig.collectionId}/items`,
       {
@@ -401,7 +373,6 @@ async function updateStudentRecord(
         },
       }
     );
-
     if (!response.ok) {
       const errorText = await response.text();
       console.error(
@@ -412,55 +383,23 @@ async function updateStudentRecord(
 
     const data = await response.json();
     const items = data.items || [];
-
-    console.log(`[${timestamp}] Found ${items.length} student items`);
-
-    // Find the student by name
     const studentItem = items.find((item) => {
       const itemValue = item.fieldData[updateConfig.lookupField];
-      if (!itemValue) return false;
       return (
-        itemValue.toLowerCase().trim() === studentName.toLowerCase().trim()
+        itemValue &&
+        itemValue.toLowerCase().trim() ===
+          String(studentName).toLowerCase().trim()
       );
     });
-
-    if (!studentItem) {
-      console.log(`[${timestamp}] Student not found: "${studentName}"`);
+    if (!studentItem)
       return { success: false, reason: `Student not found: ${studentName}` };
-    }
 
-    console.log(`[${timestamp}] Found student record: ${studentItem.id}`);
-
-    // Debug: Log all field names in the student record to identify the correct field
-    console.log(`[${timestamp}] Available fields in student record:`);
-    Object.keys(studentItem.fieldData).forEach((fieldName) => {
-      if (fieldName.includes("donor")) {
-        console.log(
-          `  - ${fieldName}: ${JSON.stringify(
-            studentItem.fieldData[fieldName]
-          )}`
-        );
-      }
-    });
-
-    // Get current multi-reference field value (should be an array of IDs)
     const currentDonorMessages =
       studentItem.fieldData[updateConfig.updateField] || [];
-    console.log(
-      `[${timestamp}] Current ${updateConfig.updateField} references:`,
-      currentDonorMessages
-    );
-
-    // Ensure it's an array
     const currentReferences = Array.isArray(currentDonorMessages)
       ? currentDonorMessages
       : [];
-
-    // Check if this donor comment ID already exists to avoid duplicates
     if (currentReferences.includes(donorCommentId)) {
-      console.log(
-        `[${timestamp}] Donor comment ID "${donorCommentId}" already exists in references`
-      );
       return {
         success: true,
         reason: "Donor comment already referenced",
@@ -468,14 +407,7 @@ async function updateStudentRecord(
       };
     }
 
-    // Add the new donor comment ID to the array
     const updatedReferences = [...currentReferences, donorCommentId];
-    console.log(
-      `[${timestamp}] Updated ${updateConfig.updateField} references will be:`,
-      updatedReferences
-    );
-
-    // Update the student record
     const updatePayload = {
       items: [
         {
@@ -490,11 +422,6 @@ async function updateStudentRecord(
       ],
     };
 
-    console.log(
-      `[${timestamp}] Updating student record with payload:`,
-      JSON.stringify(updatePayload, null, 2)
-    );
-
     const updateResponse = await fetch(
       `https://api.webflow.com/v2/collections/${updateConfig.collectionId}/items`,
       {
@@ -507,11 +434,6 @@ async function updateStudentRecord(
         body: JSON.stringify(updatePayload),
       }
     );
-
-    console.log(
-      `[${timestamp}] Student update response status: ${updateResponse.status}`
-    );
-
     if (!updateResponse.ok) {
       const errorText = await updateResponse.text();
       console.error(
@@ -519,10 +441,7 @@ async function updateStudentRecord(
       );
       return { success: false, error: errorText };
     }
-
     const updateResult = await updateResponse.json();
-    console.log(`[${timestamp}] Student record updated successfully`);
-
     return {
       success: true,
       studentId: studentItem.id,
@@ -541,17 +460,290 @@ async function updateStudentRecord(
   }
 }
 
-// Function to publish specific CMS items using bulk publish endpoint
-async function publishCmsItems(itemIds, collectionId, apiKey, timestamp) {
-  try {
-    console.log(
-      `[${timestamp}] Publishing CMS items: ${itemIds.join(
-        ", "
-      )} in collection: ${collectionId}`
-    );
+// --- NEW: Read Student collection schema and align mapping precisely at runtime ---
 
-    const response = await fetch(
-      `https://api.webflow.com/v2/collections/${collectionId}/items/publish`,
+async function fetchCollectionSchema(collectionId, apiKey, timestamp) {
+  // Primary attempt: GET /v2/collections/{id}
+  const url = `https://api.webflow.com/v2/collections/${collectionId}`;
+  console.log(`[${timestamp}] Fetching collection schema: ${url}`);
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${apiKey}`, "accept-version": "2.0.0" },
+  });
+  if (res.ok) {
+    const json = await res.json();
+    if (Array.isArray(json.fields) && json.fields.length > 0) {
+      console.log(
+        `[${timestamp}] Schema fields fetched: ${json.fields.length}`
+      );
+      return json.fields;
+    }
+  } else {
+    const err = await res.text();
+    console.warn(
+      `[${timestamp}] Failed to fetch schema (primary): ${res.status} - ${err}`
+    );
+  }
+
+  // Fallback: some APIs expose fields via /fields
+  const fallbackUrl = `https://api.webflow.com/v2/collections/${collectionId}/fields`;
+  console.log(
+    `[${timestamp}] Fetching collection schema (fallback): ${fallbackUrl}`
+  );
+  const res2 = await fetch(fallbackUrl, {
+    headers: { Authorization: `Bearer ${apiKey}`, "accept-version": "2.0.0" },
+  });
+  if (res2.ok) {
+    const json2 = await res2.json();
+    const fields = json2.fields || json2.items || [];
+    console.log(
+      `[${timestamp}] Schema fields fetched via fallback: ${
+        Array.isArray(fields) ? fields.length : 0
+      }`
+    );
+    return fields;
+  } else {
+    const err2 = await res2.text();
+    console.warn(
+      `[${timestamp}] Failed to fetch schema (fallback): ${res2.status} - ${err2}`
+    );
+  }
+
+  return [];
+}
+
+function normalize(str) {
+  return String(str || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function resolveFieldKey(schemaFields, candidates) {
+  if (!Array.isArray(schemaFields) || schemaFields.length === 0)
+    return undefined;
+  const normalizedCandidates = candidates.map((c) => normalize(c));
+
+  // Try exact slug/key match
+  for (const f of schemaFields) {
+    const slug = normalize(f.slug || f.key || f.fieldId || f.id || "");
+    if (normalizedCandidates.includes(slug))
+      return f.slug || f.key || f.fieldId || f.id;
+  }
+
+  // Try exact display name match
+  for (const f of schemaFields) {
+    const name = normalize(f.name || f.displayName || f.label || "");
+    if (normalizedCandidates.includes(name))
+      return f.slug || f.key || f.fieldId || f.id;
+  }
+
+  // Try contains match
+  for (const f of schemaFields) {
+    const slug = normalize(f.slug || f.key || f.fieldId || f.id || "");
+    const name = normalize(f.name || f.displayName || f.label || "");
+    if (
+      normalizedCandidates.some((c) => slug.includes(c) || name.includes(c))
+    ) {
+      return f.slug || f.key || f.fieldId || f.id;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Ensure a Student record exists for a given user-name when an application is Submitted.
+ * This aligns to your current Student collection schema by fetching fields and resolving keys at runtime.
+ */
+async function ensureStudentRecordForUser({
+  formData,
+  studentCollectionId,
+  apiKey,
+  timestamp,
+}) {
+  try {
+    if (!studentCollectionId) {
+      console.log(
+        `[${timestamp}] Student creation skipped: missing WEBFLOW_STUDENTSCRFD_COLLECTION_ID`
+      );
+      return { created: false, reason: "Missing student collection id" };
+    }
+
+    // Resolve userName from General Application form
+    const userNameFromForm =
+      formData["user-name"] || formData["UserName"] || "";
+    if (!userNameFromForm) {
+      console.log(
+        `[${timestamp}] Student creation skipped: missing user-name in General Application form`
+      );
+      return { created: false, reason: "Missing user-name in form" };
+    }
+
+    // 0) Read current Student collection schema to align mapping precisely
+    const schema = await fetchCollectionSchema(
+      studentCollectionId,
+      apiKey,
+      timestamp
+    );
+    if (!schema || schema.length === 0) {
+      console.log(
+        `[${timestamp}] Could not fetch student schema; proceeding with safe defaults`
+      );
+    }
+
+    const resolved = {
+      name: resolveFieldKey(schema, ["name"]),
+      schoolName: resolveFieldKey(schema, [
+        "school-name",
+        "school name",
+        "school",
+      ]),
+      schoolYear: resolveFieldKey(schema, ["school-year", "school year"]),
+      campaignTitle: resolveFieldKey(schema, [
+        "campaign-title",
+        "campaign title",
+        "title",
+      ]),
+      campaignGoal: resolveFieldKey(schema, [
+        "campaign-goal",
+        "campaign goal",
+        "goal",
+        "target-amount",
+        "target",
+      ]),
+      campaignPhoto: resolveFieldKey(schema, [
+        "campaign-photo",
+        "campaign photo",
+        "photo",
+        "image",
+        "cover-image",
+      ]),
+      studentVideo: resolveFieldKey(schema, [
+        "student-video",
+        "student video",
+        "video",
+        "video-url",
+        "embed",
+      ]),
+      letterFromStudent: resolveFieldKey(schema, [
+        "letter-from-student",
+        "letter from student",
+        "letter",
+        "story",
+      ]),
+      profileStatus: resolveFieldKey(schema, [
+        "profile-status",
+        "profile status",
+        "status",
+      ]),
+      userName: resolveFieldKey(schema, [
+        "user-name",
+        "user name",
+        "username",
+        "user",
+      ]),
+      // If any are undefined, creation will simply omit that field (safe)
+    };
+
+    console.log(`[${timestamp}] Resolved Student field keys:`, resolved);
+
+    // 1) Check if a Student record already exists for this user-name
+    console.log(
+      `[${timestamp}] Checking Student collection for existing user-name: "${userNameFromForm}"`
+    );
+    const listRes = await fetch(
+      `https://api.webflow.com/v2/collections/${studentCollectionId}/items`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+        },
+      }
+    );
+    if (!listRes.ok) {
+      const errText = await listRes.text();
+      console.error(
+        `[${timestamp}] Failed to list Student items: ${listRes.status} - ${errText}`
+      );
+      return { created: false, error: errText };
+    }
+    const listJson = await listRes.json();
+    const items = Array.isArray(listJson.items) ? listJson.items : [];
+    const userNameKey = resolved.userName;
+    const existing = items.find((item) => {
+      const val = userNameKey ? item.fieldData?.[userNameKey] : undefined;
+      return (
+        val &&
+        String(val).toLowerCase().trim() ===
+          String(userNameFromForm).toLowerCase().trim()
+      );
+    });
+    if (existing) {
+      console.log(
+        `[${timestamp}] Student record already exists for user-name "${userNameFromForm}" (id: ${existing.id})`
+      );
+      return {
+        created: false,
+        reason: "Already exists",
+        existingId: existing.id,
+      };
+    }
+
+    // 2) Build the Student record payload from General Application form
+    const firstName = formData["first-name"] || "";
+    const lastName = formData["last-name"] || "";
+    const fullName =
+      [firstName, lastName].filter(Boolean).join(" ").trim() ||
+      userNameFromForm;
+    const campaignTitle = firstName
+      ? `${firstName}'s Education Fund`
+      : "Education Fund";
+    const goal = toNumberIfPossible(formData["donation-support-amount"]);
+    const storyUrl = formData["story-url"] || undefined;
+    const storyVideo = formData["story-video"] || undefined;
+    const letterFromStudent = formData["funding-need-story"] || "";
+
+    // Build fieldData with resolved keys only if present
+    const fieldData = {};
+    if (resolved.name) fieldData[resolved.name] = fullName;
+    if (resolved.schoolName)
+      fieldData[resolved.schoolName] = formData["school"] || "";
+    if (resolved.schoolYear)
+      fieldData[resolved.schoolYear] = formData["school-year"] || "";
+    if (resolved.campaignTitle)
+      fieldData[resolved.campaignTitle] = campaignTitle;
+    if (resolved.campaignGoal && goal !== undefined)
+      fieldData[resolved.campaignGoal] = goal;
+    if (resolved.campaignPhoto && storyUrl)
+      fieldData[resolved.campaignPhoto] = storyUrl;
+    if (resolved.studentVideo && storyVideo)
+      fieldData[resolved.studentVideo] = storyVideo;
+    if (resolved.letterFromStudent)
+      fieldData[resolved.letterFromStudent] = letterFromStudent;
+    if (resolved.profileStatus) fieldData[resolved.profileStatus] = "Draft";
+    if (resolved.userName) fieldData[resolved.userName] = userNameFromForm;
+
+    // Always provide a slug (Webflow requires)
+    fieldData.slug = `student-${sanitizeSlug(
+      userNameFromForm || fullName
+    )}-${Date.now()}`;
+
+    const createPayload = {
+      items: [
+        {
+          isArchived: false,
+          isDraft: false, // create as published
+          fieldData,
+        },
+      ],
+    };
+
+    console.log(
+      `[${timestamp}] Creating Student record with payload:`,
+      JSON.stringify(createPayload, null, 2)
+    );
+    const createRes = await fetch(
+      `https://api.webflow.com/v2/collections/${studentCollectionId}/items`,
       {
         method: "POST",
         headers: {
@@ -559,45 +751,59 @@ async function publishCmsItems(itemIds, collectionId, apiKey, timestamp) {
           "accept-version": "2.0.0",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          itemIds: itemIds,
-        }),
+        body: JSON.stringify(createPayload),
       }
     );
-
-    console.log(
-      `[${timestamp}] Bulk publish response status: ${response.status}`
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
+    if (!createRes.ok) {
+      const errText = await createRes.text();
       console.error(
-        `[${timestamp}] Failed to publish items: ${response.status} - ${errorText}`
+        `[${timestamp}] Failed to create Student record: ${createRes.status} - ${errText}`
       );
-      return { success: false, error: errorText, status: response.status };
+      return { created: false, error: errText, status: createRes.status };
     }
 
-    const publishData = await response.json();
-    console.log(`[${timestamp}] Items published successfully:`, publishData);
-    return { success: true, data: publishData };
-  } catch (error) {
-    console.error(`[${timestamp}] Error publishing items:`, error.message);
-    return { success: false, error: error.message };
+    const createdJson = await createRes.json();
+    const newId = createdJson.items?.[0]?.id;
+    console.log(`[${timestamp}] Student record created. ID: ${newId}`);
+
+    // Publish immediately to avoid "Queued to publish"
+    let publishResult = { success: false };
+    if (newId) {
+      publishResult = await publishCmsItems(
+        [newId],
+        studentCollectionId,
+        apiKey,
+        timestamp
+      );
+    }
+
+    return {
+      created: true,
+      id: newId,
+      publishResult,
+      data: createdJson,
+      resolvedFieldKeys: resolved,
+    };
+  } catch (e) {
+    console.error(
+      `[${timestamp}] Error in ensureStudentRecordForUser:`,
+      e.message
+    );
+    return { created: false, error: e.message };
   }
 }
+
+// --- Handler ---
 
 export default async function handler(req, res) {
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] Function invoked`);
 
-  // Add CORS headers
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method === "GET") {
     return res.status(200).json({
@@ -612,17 +818,13 @@ export default async function handler(req, res) {
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({
-      error: "Method not allowed",
-      expected: "POST",
-      timestamp,
-    });
+    return res
+      .status(405)
+      .json({ error: "Method not allowed", expected: "POST", timestamp });
   }
 
   try {
-    // ENHANCED: Check if this is an automated/bot request
     const automatedCheck = isAutomatedRequest(req);
-
     console.log(`[${timestamp}] Request analysis:`, {
       userAgent: automatedCheck.userAgent,
       referer: automatedCheck.referer,
@@ -637,8 +839,6 @@ export default async function handler(req, res) {
       method: req.method,
       contentType: req.headers["content-type"] || "none",
     });
-
-    // If it's likely an automated request, return early with minimal logging
     if (automatedCheck.isLikelyAutomated) {
       console.log(
         `[${timestamp}] AUTOMATED REQUEST DETECTED - Returning early to avoid spam`
@@ -646,7 +846,7 @@ export default async function handler(req, res) {
       return res.status(200).json({
         message: "Webhook endpoint is healthy",
         timestamp,
-        note: "Automated request detected",
+        note: "Automated request",
       });
     }
 
@@ -655,21 +855,13 @@ export default async function handler(req, res) {
       JSON.stringify(req.body, null, 2)
     );
 
-    // Extract form data from Webflow webhook
+    // Extract Webflow webhook data
     let formData = null;
     let formId = null;
-    let webhookInfo = null;
-
     try {
       if (req.body?.triggerType === "form_submission" && req.body?.payload) {
         formData = req.body.payload.data;
         formId = req.body.payload.formId;
-        webhookInfo = {
-          siteId: req.body.payload.siteId || "unknown",
-          submittedAt: req.body.payload.submittedAt || new Date().toISOString(),
-          pageId: req.body.payload.pageId || "unknown",
-          publishedPath: req.body.payload.publishedPath || "/unknown",
-        };
         console.log(`[${timestamp}] Webflow form submission detected`);
       } else {
         console.log(
@@ -681,11 +873,6 @@ export default async function handler(req, res) {
           received: {
             triggerType: req.body?.triggerType,
             hasPayload: !!req.body?.payload,
-          },
-          requestInfo: {
-            userAgent: automatedCheck.userAgent,
-            referer: automatedCheck.referer,
-            contentType: req.headers["content-type"],
           },
           timestamp,
         });
@@ -705,9 +892,8 @@ export default async function handler(req, res) {
     console.log(`[${timestamp}] Form ID: ${formId}`);
     console.log(`[${timestamp}] Form data:`, JSON.stringify(formData, null, 2));
 
-    // ENHANCED DEBUGGING: Show all form field names to help with mapping
+    // Debug fields
     console.log(`[${timestamp}] === FORM FIELD DEBUGGING ===`);
-    console.log(`[${timestamp}] Available form fields:`);
     Object.keys(formData).forEach((key, index) => {
       console.log(
         `[${timestamp}]   ${index + 1}. "${key}" = "${formData[key]}"`
@@ -715,7 +901,7 @@ export default async function handler(req, res) {
     });
     console.log(`[${timestamp}] === END FORM FIELD DEBUGGING ===`);
 
-    // Get form configuration
+    // Get form config
     const formConfig = FORM_CONFIGS[formId];
     if (!formConfig) {
       console.log(`[${timestamp}] Unknown form ID: ${formId}`);
@@ -724,17 +910,11 @@ export default async function handler(req, res) {
         formId,
         supportedForms: Object.keys(FORM_CONFIGS),
         availableFormFields: Object.keys(formData),
-        requestInfo: {
-          userAgent: automatedCheck.userAgent,
-          referer: automatedCheck.referer,
-        },
         timestamp,
       });
     }
 
-    console.log(`[${timestamp}] Processing form: ${formConfig.name}`);
-
-    // Validate required environment variables
+    // Env checks
     if (!process.env.WEBFLOW_API_KEY) {
       console.error(`[${timestamp}] Missing WEBFLOW_API_KEY`);
       return res.status(500).json({
@@ -742,38 +922,22 @@ export default async function handler(req, res) {
         timestamp,
       });
     }
-
     if (!formConfig.collectionId) {
       console.error(
         `[${timestamp}] Missing collection ID for form: ${formConfig.name}`
       );
       return res.status(500).json({
         error: `Missing collection ID for form: ${formConfig.name}`,
-        requiredEnvVar: "WEBFLOW_GENRLAPPL_COLLECTION_ID",
-        availableEnvVars: {
-          WEBFLOW_API_KEY: !!process.env.WEBFLOW_API_KEY,
-          WEBFLOW_DONOR_COMMENTS_COLLECTION_ID:
-            !!process.env.WEBFLOW_DONOR_COMMENTS_COLLECTION_ID,
-          WEBFLOW_STUDENTSCRFD_COLLECTION_ID:
-            !!process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
-          WEBFLOW_GENRLAPPL_COLLECTION_ID:
-            !!process.env.WEBFLOW_GENRLAPPL_COLLECTION_ID,
-        },
         timestamp,
       });
     }
 
-    console.log(
-      `[${timestamp}] Using collection ID: ${formConfig.collectionId}`
-    );
-
-    // Extract and map form fields
+    // Extract and map fields
     const extractedData = {};
     const missingRequired = [];
     const skippedFields = [];
 
     try {
-      // Map form fields according to configuration
       for (const [webflowField, cmsField] of Object.entries(
         formConfig.fieldMapping
       )) {
@@ -783,126 +947,69 @@ export default async function handler(req, res) {
         );
 
         if (value !== undefined && value !== null && value !== "") {
-          // Check if this is a reference field
           if (
             formConfig.referenceFields &&
             formConfig.referenceFields[cmsField]
           ) {
-            console.log(
-              `[${timestamp}] Processing reference field: ${cmsField} with value: "${value}"`
-            );
-
             const referenceConfig = formConfig.referenceFields[cmsField];
-
             if (!referenceConfig.collectionId) {
-              console.log(
-                `[${timestamp}] No collection ID for reference field ${cmsField}`
-              );
-              if (referenceConfig.fallbackToText) {
-                console.log(
-                  `[${timestamp}] Using fallback text value for ${cmsField}`
-                );
+              if (referenceConfig.fallbackToText)
                 extractedData[cmsField] = value;
-              } else {
-                console.log(
-                  `[${timestamp}] Skipping reference field ${cmsField} - no collection ID`
-                );
+              else {
                 skippedFields.push(`${cmsField} (no collection ID)`);
                 continue;
               }
             } else {
-              // Look up the reference item
               const referenceResult = await lookupReferenceItem(
                 value,
                 referenceConfig,
                 process.env.WEBFLOW_API_KEY,
                 timestamp
               );
-
               if (referenceResult && referenceResult.id) {
                 extractedData[cmsField] = referenceResult.id;
-                console.log(
-                  `[${timestamp}] Mapped reference field ${cmsField} to ID: ${referenceResult.id}`
-                );
+              } else if (referenceConfig.fallbackToText) {
+                extractedData[cmsField] = value;
               } else {
-                console.log(
-                  `[${timestamp}] Could not resolve reference for ${cmsField}: "${value}"`
-                );
-
-                if (referenceConfig.fallbackToText) {
-                  console.log(
-                    `[${timestamp}] Using fallback text value for ${cmsField}`
-                  );
-                  extractedData[cmsField] = value;
-                } else {
-                  console.log(
-                    `[${timestamp}] Skipping reference field ${cmsField} - no match found`
-                  );
-                  skippedFields.push(`${cmsField} (no match for "${value}")`);
-                  continue;
-                }
+                skippedFields.push(`${cmsField} (no match for "${value}")`);
+                continue;
               }
             }
           } else {
-            // Regular field mapping
             extractedData[cmsField] = value;
-            console.log(
-              `[${timestamp}] Mapped regular field ${cmsField}: "${value}"`
-            );
           }
-        } else {
-          console.log(`[${timestamp}] Skipping empty field: ${webflowField}`);
         }
 
-        // Check required fields
         if (
           formConfig.requiredFields.includes(webflowField) &&
-          (!value || value.trim() === "")
+          (!value || String(value).trim() === "")
         ) {
           missingRequired.push(webflowField);
         }
       }
 
-      // NEW: Apply dynamic status override for General Applications form
+      // Apply status override
       if (formConfig.statusOverride && formConfig.statusOverride.enabled) {
-        let statusValue;
-
-        if (typeof formConfig.statusOverride.getValue === "function") {
-          // Use dynamic status determination
-          statusValue = formConfig.statusOverride.getValue(formData);
-        } else {
-          // Use static value (backward compatibility)
-          statusValue = formConfig.statusOverride.value;
-        }
-
-        const originalStatus = extractedData[formConfig.statusOverride.field];
+        const statusValue =
+          typeof formConfig.statusOverride.getValue === "function"
+            ? formConfig.statusOverride.getValue(formData)
+            : formConfig.statusOverride.value;
         extractedData[formConfig.statusOverride.field] = statusValue;
-
         console.log(
-          `[${timestamp}] DYNAMIC STATUS OVERRIDE: Changed ${formConfig.statusOverride.field} from "${originalStatus}" to "${statusValue}"`
+          `[${timestamp}] STATUS OVERRIDE -> ${formConfig.statusOverride.field}: "${statusValue}"`
         );
       }
 
-      console.log(`[${timestamp}] Extracted data:`, extractedData);
-      if (skippedFields.length > 0) {
-        console.log(`[${timestamp}] Skipped fields:`, skippedFields);
-      }
-
-      // Enhanced debugging: Show unmapped fields
+      // Unmapped fields debug
       const mappedFields = Object.keys(formConfig.fieldMapping);
       const unmappedFields = Object.keys(formData).filter(
-        (field) => !mappedFields.includes(field)
+        (f) => !mappedFields.includes(f)
       );
       if (unmappedFields.length > 0) {
         console.log(`[${timestamp}] === UNMAPPED FIELDS ===`);
-        console.log(
-          `[${timestamp}] These form fields are not mapped to CMS fields:`
+        unmappedFields.forEach((f, i) =>
+          console.log(`[${timestamp}]   ${i + 1}. "${f}" = "${formData[f]}"`)
         );
-        unmappedFields.forEach((field, index) => {
-          console.log(
-            `[${timestamp}]   ${index + 1}. "${field}" = "${formData[field]}"`
-          );
-        });
         console.log(`[${timestamp}] === END UNMAPPED FIELDS ===`);
       }
     } catch (mappingError) {
@@ -917,7 +1024,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Validate required fields
     if (missingRequired.length > 0) {
       console.log(`[${timestamp}] Missing required fields:`, missingRequired);
       return res.status(400).json({
@@ -929,17 +1035,14 @@ export default async function handler(req, res) {
       });
     }
 
-    // Generate slug using form-specific logic
+    // Slug and name
     let slug;
     try {
       slug = formConfig.generateSlug(formData);
       console.log(`[${timestamp}] Generated slug: ${slug}`);
-    } catch (slugError) {
-      console.error(`[${timestamp}] Error generating slug:`, slugError.message);
+    } catch {
       slug = `submission-${Date.now()}`;
     }
-
-    // Ensure 'name' field exists (required by Webflow API)
     if (!extractedData.name) {
       const firstValue =
         Object.values(extractedData)[0] || `Submission ${Date.now()}`;
@@ -947,15 +1050,10 @@ export default async function handler(req, res) {
       console.log(`[${timestamp}] Generated name field: ${extractedData.name}`);
     }
 
-    // NEW LOGIC: Check for existing record to update (only for General Applications)
+    // Create or update Application
     let existingRecord = null;
     let isUpdate = false;
-
-    if (
-      formConfig.updateExistingRecord &&
-      formConfig.updateExistingRecord.enabled &&
-      extractedData.name
-    ) {
+    if (formConfig.updateExistingRecord?.enabled && extractedData.name) {
       existingRecord = await checkForExistingRecord(
         extractedData.name,
         formConfig.updateExistingRecord,
@@ -963,43 +1061,30 @@ export default async function handler(req, res) {
         process.env.WEBFLOW_API_KEY,
         timestamp
       );
-
-      if (existingRecord && existingRecord.canUpdate) {
-        isUpdate = true;
-        console.log(
-          `[${timestamp}] Will update existing record: ${existingRecord.id}`
-        );
-      } else {
-        console.log(`[${timestamp}] Will create new record`);
-      }
+      isUpdate = !!(existingRecord && existingRecord.canUpdate);
     }
 
-    // Create payload for either CREATE or UPDATE
     let payload;
     let webflowResponse;
-
     if (isUpdate && existingRecord) {
-      // UPDATE existing record - SET TO PUBLISHED STATUS
       payload = {
         items: [
           {
             id: existingRecord.id,
             isArchived: false,
-            isDraft: false, // CHANGED: Set to published when submitting
+            isDraft: false,
             fieldData: {
-              ...existingRecord.item.fieldData, // Keep existing data
-              ...extractedData, // Override with new form data (including "Submitted" status)
-              slug: existingRecord.item.fieldData.slug || slug, // Keep existing slug or use new one
+              ...existingRecord.item.fieldData,
+              ...extractedData,
+              slug: existingRecord.item.fieldData.slug || slug,
             },
           },
         ],
       };
-
       console.log(
         `[${timestamp}] UPDATE payload:`,
         JSON.stringify(payload, null, 2)
       );
-
       webflowResponse = await fetch(
         `https://api.webflow.com/v2/collections/${formConfig.collectionId}/items`,
         {
@@ -1013,25 +1098,19 @@ export default async function handler(req, res) {
         }
       );
     } else {
-      // CREATE new record - SET TO PUBLISHED STATUS
       payload = {
         items: [
           {
             isArchived: false,
-            isDraft: false, // CHANGED: Set to published when submitting
-            fieldData: {
-              ...extractedData, // Includes "Submitted" status
-              slug: slug,
-            },
+            isDraft: false,
+            fieldData: { ...extractedData, slug },
           },
         ],
       };
-
       console.log(
         `[${timestamp}] CREATE payload:`,
         JSON.stringify(payload, null, 2)
       );
-
       webflowResponse = await fetch(
         `https://api.webflow.com/v2/collections/${formConfig.collectionId}/items`,
         {
@@ -1046,159 +1125,96 @@ export default async function handler(req, res) {
       );
     }
 
-    // Handle API response
-    try {
-      console.log(
-        `[${timestamp}] Making ${
-          isUpdate ? "UPDATE" : "CREATE"
-        } request to Webflow API...`
-      );
-      console.log(
-        `[${timestamp}] Webflow API response status:`,
-        webflowResponse.status
-      );
-
-      if (!webflowResponse.ok) {
-        const errorData = await webflowResponse.text();
-        console.error(`[${timestamp}] Webflow API error:`, errorData);
-
-        return res.status(webflowResponse.status).json({
-          error: `Failed to ${isUpdate ? "update" : "create"} CMS item`,
-          formName: formConfig.name,
-          collectionId: formConfig.collectionId,
-          details: errorData,
-          availableFormFields: Object.keys(formData),
-          configuredFieldMappings: formConfig.fieldMapping,
-          extractedData: extractedData,
-          isUpdate: isUpdate,
-          existingRecordId: existingRecord?.id,
-          timestamp,
-        });
-      }
-
-      const responseData = await webflowResponse.json();
-      console.log(
-        `[${timestamp}] CMS item ${
-          isUpdate ? "updated" : "created"
-        } successfully`
-      );
-
-      // Get the item ID (for updates, it's the existing ID; for creates, it's the new ID)
-      const itemId = isUpdate ? existingRecord.id : responseData.items?.[0]?.id;
-      // EXPLICIT PUBLISHING: Publish the CMS item immediately after creation/update
-      let publishResult = { success: false };
-      if (itemId) {
-        console.log(`[${timestamp}] Publishing CMS item: ${itemId}`);
-        publishResult = await publishCmsItems(
-          [itemId],
-          formConfig.collectionId,
-          process.env.WEBFLOW_API_KEY,
-          timestamp
-        );
-
-        if (publishResult.success) {
-          console.log(`[${timestamp}] CMS item published successfully`);
-        } else {
-          console.error(
-            `[${timestamp}] Failed to publish CMS item:`,
-            publishResult.error
-          );
-        }
-      } else {
-        console.error(`[${timestamp}] No item ID found for publishing`);
-        publishResult = { success: false, error: "No item ID found" };
-      }
-      let studentUpdateResult = { success: false };
-
-      // Update student record with donor comment reference (only for donor comments form)
-      if (
-        formConfig.updateStudentRecord &&
-        formConfig.updateStudentRecord.enabled
-      ) {
-        const studentName = formData.StudentProfile;
-
-        if (studentName && itemId) {
-          console.log(
-            `[${timestamp}] Updating student "${studentName}" with donor comment ID "${itemId}"`
-          );
-          studentUpdateResult = await updateStudentRecord(
-            studentName,
-            itemId,
-            formConfig.updateStudentRecord,
-            process.env.WEBFLOW_API_KEY,
-            timestamp
-          );
-
-          // Publish the updated student record if the update was successful
-          if (studentUpdateResult.success && studentUpdateResult.studentId) {
-            console.log(
-              `[${timestamp}] Publishing updated student record: ${studentUpdateResult.studentId}`
-            );
-            const studentPublishResult = await publishCmsItems(
-              [studentUpdateResult.studentId],
-              formConfig.updateStudentRecord.collectionId,
-              process.env.WEBFLOW_API_KEY,
-              timestamp
-            );
-
-            // Add student publish result to the response
-            studentUpdateResult.publishResult = studentPublishResult;
-
-            if (studentPublishResult.success) {
-              console.log(
-                `[${timestamp}] Student record published successfully`
-              );
-            } else {
-              console.log(
-                `[${timestamp}] Failed to publish student record:`,
-                studentPublishResult.error
-              );
-            }
-          }
-        } else {
-          console.log(
-            `[${timestamp}] Missing student name or donor comment ID for update`
-          );
-          studentUpdateResult = {
-            success: false,
-            reason: "Missing student name or donor comment ID",
-          };
-        }
-      }
-
-      res.status(200).json({
-        success: true,
-        message: `${formConfig.name} submission processed successfully`,
-        action: isUpdate ? "updated" : "created",
-        status: extractedData["application-status"], // Always "Submitted" when form is submitted
-        formId,
+    console.log(
+      `[${timestamp}] Webflow API response status:`,
+      webflowResponse.status
+    );
+    if (!webflowResponse.ok) {
+      const errorData = await webflowResponse.text();
+      console.error(`[${timestamp}] Webflow API error:`, errorData);
+      return res.status(webflowResponse.status).json({
+        error: `Failed to ${isUpdate ? "update" : "create"} CMS item`,
         formName: formConfig.name,
-        data: responseData,
-        extractedFields: extractedData,
-        skippedFields: skippedFields,
-        publishResult: publishResult,
-        studentUpdateResult: studentUpdateResult,
-        itemId: itemId,
-        isUpdate: isUpdate,
+        collectionId: formConfig.collectionId,
+        details: errorData,
+        extractedData,
+        isUpdate,
         existingRecordId: existingRecord?.id,
-        availableFormFields: Object.keys(formData),
-        timestamp,
-      });
-    } catch (apiError) {
-      console.error(
-        `[${timestamp}] Error calling Webflow API:`,
-        apiError.message
-      );
-      return res.status(500).json({
-        error: "Failed to call Webflow API",
-        details: apiError.message,
         timestamp,
       });
     }
+
+    const responseData = await webflowResponse.json();
+    console.log(
+      `[${timestamp}] CMS item ${isUpdate ? "updated" : "created"} successfully`
+    );
+    const itemId = isUpdate ? existingRecord.id : responseData.items?.[0]?.id;
+
+    // Publish Application now
+    let publishResult = { success: false };
+    if (itemId) {
+      publishResult = await publishCmsItems(
+        [itemId],
+        formConfig.collectionId,
+        process.env.WEBFLOW_API_KEY,
+        timestamp
+      );
+    }
+
+    // If General Application is Submitted, ensure Student record exists
+    let studentCreationResult = { created: false };
+    if (
+      formId === "682602bb5760376d719623dc" &&
+      formConfig.createStudentOnSubmit?.enabled &&
+      String(extractedData["application-status"] || "").toLowerCase() ===
+        "submitted"
+    ) {
+      console.log(
+        `[${timestamp}] Application status is Submitted -> ensuring Student record`
+      );
+      studentCreationResult = await ensureStudentRecordForUser({
+        formData,
+        studentCollectionId:
+          formConfig.createStudentOnSubmit.studentCollectionId,
+        apiKey: process.env.WEBFLOW_API_KEY,
+        timestamp,
+      });
+      if (studentCreationResult.created) {
+        console.log(
+          `[${timestamp}] Student record created: ${studentCreationResult.id}`
+        );
+      } else {
+        console.log(
+          `[${timestamp}] Student record not created: ${
+            studentCreationResult.reason ||
+            studentCreationResult.error ||
+            "unknown"
+          }`
+        );
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `${formConfig.name} submission processed successfully`,
+      action: isUpdate ? "updated" : "created",
+      status: extractedData["application-status"],
+      formId,
+      formName: formConfig.name,
+      data: responseData,
+      extractedFields: extractedData,
+      skippedFields,
+      publishResult,
+      itemId,
+      isUpdate,
+      existingRecordId: existingRecord?.id,
+      studentCreationResult,
+      timestamp,
+    });
   } catch (error) {
     console.error(`[${timestamp}] Unexpected error:`, error.message);
     console.error(`[${timestamp}] Error stack:`, error.stack);
-    res.status(500).json({
+    return res.status(500).json({
       error: "Internal server error",
       message: error.message,
       stack: error.stack,
