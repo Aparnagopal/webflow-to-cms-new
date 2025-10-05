@@ -3,8 +3,9 @@
  * - Corrected field mappings for General Application
  * - Dynamic status override based on "form-action"
  * - Explicit publishing to avoid "Queued to publish"
- * - NEW: Create Student Profile in WEBFLOW_STUDENTSCRFD_COLLECTION_ID when Application is Submitted
- * - NEW: Automatic, precise alignment to current Student collection schema by fetching it at runtime
+ * - Creates Student Profile in WEBFLOW_STUDENTSCRFD_COLLECTION_ID when Application is Submitted
+ * - Aligns to current Student collection schema by fetching fields at runtime
+ * - NEW: Rehost formUploads assets to Webflow Assets API, then attach CDN URL to CMS
  */
 
 const FORM_CONFIGS = {
@@ -55,7 +56,7 @@ const FORM_CONFIGS = {
       "last-name": "last-name",
       email: "email",
       phone: "phone",
-      "user-name": "name", // the CMS "name" field will store the "user-name" for lookup
+      "user-name": "name",
       "date-of-birth": "date-of-birth",
       school: "school",
       "school-year": "school-year",
@@ -116,7 +117,6 @@ const FORM_CONFIGS = {
         const formAction = formData["form-action"];
         if (formAction === "save") return "Draft";
         if (formAction === "submit") return "Submitted";
-
         const hasRequiredSignatures =
           formData["disclosure-signed-name"] && formData["form-signed-name"];
         const hasAcceptedTerms = formData["terms-acceptance-check"] === "true";
@@ -142,7 +142,6 @@ const FORM_CONFIGS = {
       }
     },
     addAutomaticFields: false,
-    // NEW: Create Student profile when Application is Submitted
     createStudentOnSubmit: {
       enabled: true,
       studentCollectionId: process.env.WEBFLOW_STUDENTSCRFD_COLLECTION_ID,
@@ -195,6 +194,19 @@ function toNumberIfPossible(value) {
   return Number.isNaN(n) ? undefined : n;
 }
 
+function getHostnameFromUrl(urlStr) {
+  try {
+    return new URL(urlStr).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isForbiddenAssetHost(urlStr) {
+  const host = getHostnameFromUrl(urlStr);
+  return host === "webflow.com" || host.endsWith(".webflow.com");
+}
+
 async function publishCmsItems(itemIds, collectionId, apiKey, timestamp) {
   try {
     console.log(
@@ -233,7 +245,7 @@ async function publishCmsItems(itemIds, collectionId, apiKey, timestamp) {
   }
 }
 
-// --- Reference helpers for donor comments (unchanged) ---
+// --- Reference helpers for donor comments ---
 
 async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
   try {
@@ -241,7 +253,6 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
       `[${timestamp}] Looking up reference item: "${value}" in collection: ${referenceConfig.collectionId}`
     );
     if (!referenceConfig.collectionId) return null;
-
     const response = await fetch(
       `https://api.webflow.com/v2/collections/${referenceConfig.collectionId}/items`,
       {
@@ -261,7 +272,6 @@ async function lookupReferenceItem(value, referenceConfig, apiKey, timestamp) {
       );
       return null;
     }
-
     const data = await response.json();
     const items = data.items || [];
     const matchingItem = items.find((item) => {
@@ -293,7 +303,6 @@ async function checkForExistingRecord(
       `[${timestamp}] Checking for existing record with name: "${userName}" and status: "${updateConfig.statusValue}"`
     );
     if (!updateConfig.enabled) return null;
-
     const response = await fetch(
       `https://api.webflow.com/v2/collections/${collectionId}/items`,
       {
@@ -313,7 +322,6 @@ async function checkForExistingRecord(
       );
       return null;
     }
-
     const data = await response.json();
     const items = data.items || [];
     const existingItem = items.find((item) => {
@@ -329,7 +337,6 @@ async function checkForExistingRecord(
           updateConfig.statusValue.toLowerCase().trim();
       return nameMatch && statusMatch;
     });
-
     if (existingItem) {
       console.log(
         `[${timestamp}] Found existing Draft record: ${existingItem.id} for "${userName}"`
@@ -357,13 +364,10 @@ async function updateStudentRecord(
   timestamp
 ) {
   try {
-    if (!updateConfig.enabled || !updateConfig.collectionId) {
+    if (!updateConfig.enabled || !updateConfig.collectionId)
       return { success: false, reason: "Update not enabled" };
-    }
-    if (!donorCommentId) {
+    if (!donorCommentId)
       return { success: false, reason: "No donor comment ID provided" };
-    }
-
     const response = await fetch(
       `https://api.webflow.com/v2/collections/${updateConfig.collectionId}/items`,
       {
@@ -380,7 +384,6 @@ async function updateStudentRecord(
       );
       return { success: false, error: errorText };
     }
-
     const data = await response.json();
     const items = data.items || [];
     const studentItem = items.find((item) => {
@@ -393,7 +396,6 @@ async function updateStudentRecord(
     });
     if (!studentItem)
       return { success: false, reason: `Student not found: ${studentName}` };
-
     const currentDonorMessages =
       studentItem.fieldData[updateConfig.updateField] || [];
     const currentReferences = Array.isArray(currentDonorMessages)
@@ -406,7 +408,6 @@ async function updateStudentRecord(
         noUpdate: true,
       };
     }
-
     const updatedReferences = [...currentReferences, donorCommentId];
     const updatePayload = {
       items: [
@@ -421,7 +422,6 @@ async function updateStudentRecord(
         },
       ],
     };
-
     const updateResponse = await fetch(
       `https://api.webflow.com/v2/collections/${updateConfig.collectionId}/items`,
       {
@@ -460,10 +460,9 @@ async function updateStudentRecord(
   }
 }
 
-// --- NEW: Read Student collection schema and align mapping precisely at runtime ---
+// --- Schema helpers for Student collection ---
 
 async function fetchCollectionSchema(collectionId, apiKey, timestamp) {
-  // Primary attempt: GET /v2/collections/{id}
   const url = `https://api.webflow.com/v2/collections/${collectionId}`;
   console.log(`[${timestamp}] Fetching collection schema: ${url}`);
   const res = await fetch(url, {
@@ -478,13 +477,13 @@ async function fetchCollectionSchema(collectionId, apiKey, timestamp) {
       return json.fields;
     }
   } else {
-    const err = await res.text();
     console.warn(
-      `[${timestamp}] Failed to fetch schema (primary): ${res.status} - ${err}`
+      `[${timestamp}] Failed to fetch schema (primary): ${
+        res.status
+      } - ${await res.text()}`
     );
   }
 
-  // Fallback: some APIs expose fields via /fields
   const fallbackUrl = `https://api.webflow.com/v2/collections/${collectionId}/fields`;
   console.log(
     `[${timestamp}] Fetching collection schema (fallback): ${fallbackUrl}`
@@ -502,12 +501,12 @@ async function fetchCollectionSchema(collectionId, apiKey, timestamp) {
     );
     return fields;
   } else {
-    const err2 = await res2.text();
     console.warn(
-      `[${timestamp}] Failed to fetch schema (fallback): ${res2.status} - ${err2}`
+      `[${timestamp}] Failed to fetch schema (fallback): ${
+        res2.status
+      } - ${await res2.text()}`
     );
   }
-
   return [];
 }
 
@@ -522,22 +521,16 @@ function resolveFieldKey(schemaFields, candidates) {
   if (!Array.isArray(schemaFields) || schemaFields.length === 0)
     return undefined;
   const normalizedCandidates = candidates.map((c) => normalize(c));
-
-  // Try exact slug/key match
   for (const f of schemaFields) {
     const slug = normalize(f.slug || f.key || f.fieldId || f.id || "");
     if (normalizedCandidates.includes(slug))
       return f.slug || f.key || f.fieldId || f.id;
   }
-
-  // Try exact display name match
   for (const f of schemaFields) {
     const name = normalize(f.name || f.displayName || f.label || "");
     if (normalizedCandidates.includes(name))
       return f.slug || f.key || f.fieldId || f.id;
   }
-
-  // Try contains match
   for (const f of schemaFields) {
     const slug = normalize(f.slug || f.key || f.fieldId || f.id || "");
     const name = normalize(f.name || f.displayName || f.label || "");
@@ -547,17 +540,107 @@ function resolveFieldKey(schemaFields, candidates) {
       return f.slug || f.key || f.fieldId || f.id;
     }
   }
-
   return undefined;
+}
+
+// --- NEW: Rehost a remote asset to Webflow Assets API and return CDN URL ---
+
+async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
+  try {
+    console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`);
+    const fileRes = await fetch(sourceUrl);
+    if (!fileRes.ok) {
+      const t = await fileRes.text().catch(() => "");
+      console.error(
+        `[${timestamp}] Failed to fetch source asset: ${fileRes.status} - ${t}`
+      );
+      return { ok: false, reason: `fetch-failed-${fileRes.status}` };
+    }
+
+    const contentType =
+      fileRes.headers.get("content-type") || "application/octet-stream";
+    const path = (() => {
+      try {
+        return new URL(sourceUrl).pathname || "";
+      } catch {
+        return "";
+      }
+    })();
+    const extFromPath = (path.split(".").pop() || "").toLowerCase();
+    const guessedExt =
+      extFromPath && extFromPath.length <= 5
+        ? `.${extFromPath.replace(/[^a-z0-9]/g, "")}`
+        : contentType.startsWith("image/")
+        ? `.${contentType.split("/")[1]?.split(";")[0] || "bin"}`
+        : ".bin";
+
+    const ab = await fileRes.arrayBuffer();
+    const blob = new Blob([ab], { type: contentType });
+    const filename = `upload-${Date.now()}${guessedExt}`;
+
+    const form = new FormData();
+    form.append("file", blob, filename);
+
+    const uploadUrl = `https://api.webflow.com/v2/sites/${siteId}/assets`;
+    console.log(
+      `[${timestamp}] Uploading to Webflow Assets: ${uploadUrl} as ${filename} (${contentType})`
+    );
+    const uploadRes = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "accept-version": "2.0.0" },
+      body: form,
+    });
+
+    const json = await uploadRes.json().catch(() => ({}));
+    console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
+    if (!uploadRes.ok) {
+      console.error(
+        `[${timestamp}] Assets upload failed: ${
+          uploadRes.status
+        } - ${JSON.stringify(json)}`
+      );
+      return {
+        ok: false,
+        reason: `assets-upload-failed-${uploadRes.status}`,
+        error: json,
+      };
+    }
+
+    // Try common shapes
+    const urlCandidate =
+      json?.files?.[0]?.url ||
+      json?.files?.[0]?.cdnUrl ||
+      json?.assets?.[0]?.url ||
+      json?.assets?.[0]?.cdnUrl ||
+      json?.url ||
+      json?.cdnUrl;
+
+    if (!urlCandidate) {
+      console.warn(
+        `[${timestamp}] Could not find CDN URL in assets response: ${JSON.stringify(
+          json
+        )}`
+      );
+      return { ok: false, reason: "missing-url", raw: json };
+    }
+
+    console.log(`[${timestamp}] Asset rehosted successfully: ${urlCandidate}`);
+    return { ok: true, url: urlCandidate, raw: json };
+  } catch (e) {
+    console.error(`[${timestamp}] Error rehosting asset:`, e.message);
+    return { ok: false, reason: "exception", error: e.message };
+  }
 }
 
 /**
  * Ensure a Student record exists for a given user-name when an application is Submitted.
- * This aligns to your current Student collection schema by fetching fields and resolving keys at runtime.
+ * Aligns to current Student collection schema by fetching fields and resolving keys at runtime.
+ * Rehosts formUploads image to Webflow Assets to get a CDN URL for the campaign-photo field.
  */
 async function ensureStudentRecordForUser({
   formData,
   studentCollectionId,
+  siteId,
   apiKey,
   timestamp,
 }) {
@@ -569,7 +652,6 @@ async function ensureStudentRecordForUser({
       return { created: false, reason: "Missing student collection id" };
     }
 
-    // Resolve userName from General Application form
     const userNameFromForm =
       formData["user-name"] || formData["UserName"] || "";
     if (!userNameFromForm) {
@@ -579,17 +661,16 @@ async function ensureStudentRecordForUser({
       return { created: false, reason: "Missing user-name in form" };
     }
 
-    // 0) Read current Student collection schema to align mapping precisely
+    // Read Student schema
     const schema = await fetchCollectionSchema(
       studentCollectionId,
       apiKey,
       timestamp
     );
-    if (!schema || schema.length === 0) {
+    if (!schema || schema.length === 0)
       console.log(
-        `[${timestamp}] Could not fetch student schema; proceeding with safe defaults`
+        `[${timestamp}] Could not fetch student schema; proceeding with defaults`
       );
-    }
 
     const resolved = {
       name: resolveFieldKey(schema, ["name"]),
@@ -642,12 +723,10 @@ async function ensureStudentRecordForUser({
         "username",
         "user",
       ]),
-      // If any are undefined, creation will simply omit that field (safe)
     };
-
     console.log(`[${timestamp}] Resolved Student field keys:`, resolved);
 
-    // 1) Check if a Student record already exists for this user-name
+    // Check if exists
     console.log(
       `[${timestamp}] Checking Student collection for existing user-name: "${userNameFromForm}"`
     );
@@ -689,7 +768,7 @@ async function ensureStudentRecordForUser({
       };
     }
 
-    // 2) Build the Student record payload from General Application form
+    // Build payload
     const firstName = formData["first-name"] || "";
     const lastName = formData["last-name"] || "";
     const fullName =
@@ -703,7 +782,34 @@ async function ensureStudentRecordForUser({
     const storyVideo = formData["story-video"] || undefined;
     const letterFromStudent = formData["funding-need-story"] || "";
 
-    // Build fieldData with resolved keys only if present
+    // Rehost image if needed
+    let finalCampaignPhotoUrl = null;
+    if (storyUrl) {
+      const looksLikeFormUpload =
+        /formUploads/i.test(storyUrl) || isForbiddenAssetHost(storyUrl);
+      if (looksLikeFormUpload && siteId) {
+        const rehost = await rehostToWebflowAssets({
+          sourceUrl: storyUrl,
+          siteId,
+          apiKey,
+          timestamp,
+        });
+        if (rehost.ok && rehost.url) {
+          finalCampaignPhotoUrl = rehost.url;
+          console.log(`[${timestamp}] Using rehosted campaign photo URL`);
+        } else {
+          console.warn(
+            `[${timestamp}] Rehost failed (${
+              rehost.reason || "unknown"
+            }). Will try text fallback field or skip image.`
+          );
+        }
+      } else {
+        // If it's already an allowed host, use directly
+        finalCampaignPhotoUrl = storyUrl;
+      }
+    }
+
     const fieldData = {};
     if (resolved.name) fieldData[resolved.name] = fullName;
     if (resolved.schoolName)
@@ -714,8 +820,53 @@ async function ensureStudentRecordForUser({
       fieldData[resolved.campaignTitle] = campaignTitle;
     if (resolved.campaignGoal && goal !== undefined)
       fieldData[resolved.campaignGoal] = goal;
-    if (resolved.campaignPhoto && storyUrl)
-      fieldData[resolved.campaignPhoto] = storyUrl;
+
+    if (finalCampaignPhotoUrl) {
+      if (
+        resolved.campaignPhoto &&
+        !isForbiddenAssetHost(finalCampaignPhotoUrl)
+      ) {
+        fieldData[resolved.campaignPhoto] = finalCampaignPhotoUrl;
+      } else if (
+        resolved.campaignPhoto &&
+        isForbiddenAssetHost(finalCampaignPhotoUrl)
+      ) {
+        // Shouldn't happen after rehost, but guard anyway
+        const photoUrlTextKey = resolveFieldKey(schema, [
+          "campaign-photo-url",
+          "photo-url",
+          "image-url",
+          "cover-image-url",
+          "campaign-photo-link",
+          "photo-link",
+          "image-link",
+        ]);
+        if (photoUrlTextKey) {
+          fieldData[photoUrlTextKey] = finalCampaignPhotoUrl;
+          console.log(
+            `[${timestamp}] Saved forbidden image URL to text field "${photoUrlTextKey}"`
+          );
+        }
+      } else {
+        // No image field found; attempt to store URL in a text field if present
+        const photoUrlTextKey = resolveFieldKey(schema, [
+          "campaign-photo-url",
+          "photo-url",
+          "image-url",
+          "cover-image-url",
+          "campaign-photo-link",
+          "photo-link",
+          "image-link",
+        ]);
+        if (photoUrlTextKey) {
+          fieldData[photoUrlTextKey] = finalCampaignPhotoUrl;
+          console.log(
+            `[${timestamp}] No image field found; saved URL to text field "${photoUrlTextKey}"`
+          );
+        }
+      }
+    }
+
     if (resolved.studentVideo && storyVideo)
       fieldData[resolved.studentVideo] = storyVideo;
     if (resolved.letterFromStudent)
@@ -723,7 +874,6 @@ async function ensureStudentRecordForUser({
     if (resolved.profileStatus) fieldData[resolved.profileStatus] = "Draft";
     if (resolved.userName) fieldData[resolved.userName] = userNameFromForm;
 
-    // Always provide a slug (Webflow requires)
     fieldData.slug = `student-${sanitizeSlug(
       userNameFromForm || fullName
     )}-${Date.now()}`;
@@ -732,7 +882,7 @@ async function ensureStudentRecordForUser({
       items: [
         {
           isArchived: false,
-          isDraft: false, // create as published
+          isDraft: false,
           fieldData,
         },
       ],
@@ -766,7 +916,6 @@ async function ensureStudentRecordForUser({
     const newId = createdJson.items?.[0]?.id;
     console.log(`[${timestamp}] Student record created. ID: ${newId}`);
 
-    // Publish immediately to avoid "Queued to publish"
     let publishResult = { success: false };
     if (newId) {
       publishResult = await publishCmsItems(
@@ -858,10 +1007,12 @@ export default async function handler(req, res) {
     // Extract Webflow webhook data
     let formData = null;
     let formId = null;
+    let siteId = null;
     try {
       if (req.body?.triggerType === "form_submission" && req.body?.payload) {
         formData = req.body.payload.data;
         formId = req.body.payload.formId;
+        siteId = req.body.payload.siteId || null;
         console.log(`[${timestamp}] Webflow form submission detected`);
       } else {
         console.log(
@@ -1176,6 +1327,7 @@ export default async function handler(req, res) {
         formData,
         studentCollectionId:
           formConfig.createStudentOnSubmit.studentCollectionId,
+        siteId,
         apiKey: process.env.WEBFLOW_API_KEY,
         timestamp,
       });
