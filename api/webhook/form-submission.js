@@ -543,6 +543,46 @@ function resolveFieldKey(schemaFields, candidates) {
   return undefined;
 }
 
+// Find a schema field by slug/key
+function findSchemaField(schemaFields, keyOrSlug) {
+  if (!Array.isArray(schemaFields)) return undefined;
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  const target = norm(keyOrSlug);
+  return schemaFields.find((f) => {
+    const slug = norm(f.slug || f.key || f.fieldId || f.id || "");
+    return slug === target;
+  });
+}
+
+// Attempt to read a field's max length from the schema (fallback to default if missing)
+function getMaxLengthForField(schemaFields, keyOrSlug, fallback = 500) {
+  const f = findSchemaField(schemaFields, keyOrSlug);
+  if (!f) return fallback;
+  // Try a variety of possible shapes
+  // Common: f.validations?.maxLength, f.maxLength, f.charLimit
+  const v = f.validations || f.validation || {};
+  if (typeof f.maxLength === "number") return f.maxLength;
+  if (typeof f.charLimit === "number") return f.charLimit;
+  if (typeof v.maxLength === "number") return v.maxLength;
+  // Some APIs use arrays of rules
+  if (Array.isArray(v)) {
+    const ml = v.find((r) => r && (r.maxLength || r.maximum || r.limit));
+    if (ml) return ml.maxLength || ml.maximum || ml.limit || fallback;
+  }
+  if (typeof v.maximum === "number") return v.maximum;
+  return fallback;
+}
+
+function truncateToMaxLength(value, maxLen) {
+  if (typeof value !== "string") return value;
+  if (value.length <= maxLen) return value;
+  return value.slice(0, maxLen);
+}
+
 // --- NEW: Rehost a remote asset to Webflow Assets API and return CDN URL ---
 
 async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
@@ -782,6 +822,25 @@ async function ensureStudentRecordForUser({
     const storyVideo = formData["story-video"] || undefined;
     const letterFromStudent = formData["funding-need-story"] || "";
 
+    // NEW: enforce max length for letter-from-student based on schema (fallback 500)
+    let letterValue = letterFromStudent;
+    if (resolved.letterFromStudent) {
+      const maxLen = getMaxLengthForField(
+        schema,
+        resolved.letterFromStudent,
+        500
+      );
+      if (typeof letterValue === "string" && letterValue.length > maxLen) {
+        console.log(
+          `[${timestamp}] Truncating "${resolved.letterFromStudent}" from ${letterValue.length} to max ${maxLen}`
+        );
+        letterValue = truncateToMaxLength(letterValue, maxLen);
+      }
+    }
+
+    // Track original URL for possible text fallback if rehost fails
+    let fallbackPhotoUrlText = storyUrl || null;
+
     // Rehost image if needed
     let finalCampaignPhotoUrl = null;
     if (storyUrl) {
@@ -797,6 +856,8 @@ async function ensureStudentRecordForUser({
         if (rehost.ok && rehost.url) {
           finalCampaignPhotoUrl = rehost.url;
           console.log(`[${timestamp}] Using rehosted campaign photo URL`);
+          // We no longer need the fallback text url if rehost succeeded
+          fallbackPhotoUrlText = null;
         } else {
           console.warn(
             `[${timestamp}] Rehost failed (${
@@ -805,11 +866,14 @@ async function ensureStudentRecordForUser({
           );
         }
       } else {
-        // If it's already an allowed host, use directly
+        // Allowed host already
         finalCampaignPhotoUrl = storyUrl;
+        // And no need for fallback text
+        fallbackPhotoUrlText = null;
       }
     }
 
+    // Build fieldData with resolved keys only if present
     const fieldData = {};
     if (resolved.name) fieldData[resolved.name] = fullName;
     if (resolved.schoolName)
@@ -821,34 +885,15 @@ async function ensureStudentRecordForUser({
     if (resolved.campaignGoal && goal !== undefined)
       fieldData[resolved.campaignGoal] = goal;
 
+    // Prefer finalCampaignPhotoUrl in the image field, else save original URL in a text fallback field if available
     if (finalCampaignPhotoUrl) {
       if (
         resolved.campaignPhoto &&
         !isForbiddenAssetHost(finalCampaignPhotoUrl)
       ) {
         fieldData[resolved.campaignPhoto] = finalCampaignPhotoUrl;
-      } else if (
-        resolved.campaignPhoto &&
-        isForbiddenAssetHost(finalCampaignPhotoUrl)
-      ) {
-        // Shouldn't happen after rehost, but guard anyway
-        const photoUrlTextKey = resolveFieldKey(schema, [
-          "campaign-photo-url",
-          "photo-url",
-          "image-url",
-          "cover-image-url",
-          "campaign-photo-link",
-          "photo-link",
-          "image-link",
-        ]);
-        if (photoUrlTextKey) {
-          fieldData[photoUrlTextKey] = finalCampaignPhotoUrl;
-          console.log(
-            `[${timestamp}] Saved forbidden image URL to text field "${photoUrlTextKey}"`
-          );
-        }
       } else {
-        // No image field found; attempt to store URL in a text field if present
+        // Save to a text field if image field is missing/forbidden
         const photoUrlTextKey = resolveFieldKey(schema, [
           "campaign-photo-url",
           "photo-url",
@@ -861,16 +906,55 @@ async function ensureStudentRecordForUser({
         if (photoUrlTextKey) {
           fieldData[photoUrlTextKey] = finalCampaignPhotoUrl;
           console.log(
-            `[${timestamp}] No image field found; saved URL to text field "${photoUrlTextKey}"`
+            `[${timestamp}] Saved image URL to text field "${photoUrlTextKey}" (image field missing/forbidden).`
           );
         }
+      }
+    } else if (fallbackPhotoUrlText) {
+      // Rehost unavailable: still save the original URL in a text field if present
+      const photoUrlTextKey = resolveFieldKey(schema, [
+        "campaign-photo-url",
+        "photo-url",
+        "image-url",
+        "cover-image-url",
+        "campaign-photo-link",
+        "photo-link",
+        "image-link",
+      ]);
+      if (photoUrlTextKey) {
+        fieldData[photoUrlTextKey] = fallbackPhotoUrlText;
+        console.log(
+          `[${timestamp}] Rehost unavailable. Saved original URL to text field "${photoUrlTextKey}".`
+        );
+      } else {
+        console.log(
+          `[${timestamp}] Rehost unavailable and no photo URL text field found. Proceeding without photo.`
+        );
+      }
+    }
+
+    // Optional: store full letter in a separate long-text field if it exists
+    if (
+      typeof letterFromStudent === "string" &&
+      letterFromStudent !== letterValue
+    ) {
+      const fullLetterKey = resolveFieldKey(schema, [
+        "letter-from-student-full",
+        "letter-full",
+        "story-full",
+        "full-letter",
+      ]);
+      if (fullLetterKey) {
+        // Will be included below when assembling fieldData
+        fieldData[fullLetterKey] = letterFromStudent;
+        console.log(`[${timestamp}] Saved full letter to "${fullLetterKey}"`);
       }
     }
 
     if (resolved.studentVideo && storyVideo)
       fieldData[resolved.studentVideo] = storyVideo;
     if (resolved.letterFromStudent)
-      fieldData[resolved.letterFromStudent] = letterFromStudent;
+      fieldData[resolved.letterFromStudent] = letterValue;
     if (resolved.profileStatus) fieldData[resolved.profileStatus] = "Draft";
     if (resolved.userName) fieldData[resolved.userName] = userNameFromForm;
 
