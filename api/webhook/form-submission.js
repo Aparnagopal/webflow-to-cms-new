@@ -624,10 +624,13 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     try {
       json = text ? JSON.parse(text) : {};
     } catch {
-      // not JSON
+      // Non-JSON response
     }
+
     console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
-    if (!uploadRes.ok) {
+
+    // Consider 200-299 as potentially successful; Webflow often returns 202 with hostedUrl on success
+    if (!uploadRes.ok && uploadRes.status !== 202) {
       console.error(
         `[${timestamp}] Assets upload failed: ${uploadRes.status} - ${
           text || "(no body)"
@@ -635,22 +638,32 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       );
       return { ok: false, json };
     }
-    const urlCandidate =
-      json?.files?.[0]?.url ||
-      json?.files?.[0]?.cdnUrl ||
-      json?.assets?.[0]?.url ||
-      json?.assets?.[0]?.cdnUrl ||
-      json?.url ||
-      json?.cdnUrl;
-    if (!urlCandidate) {
-      console.warn(
-        `[${timestamp}] Could not find CDN URL in assets response: ${JSON.stringify(
-          json
-        )}`
-      );
-      return { ok: false, json };
+
+    // Accept any of these as the CDN URL, prioritizing hostedUrl (CDN) over S3 URL
+    const candidates = [
+      json?.hostedUrl,
+      json?.assetUrl,
+      json?.url,
+      json?.cdnUrl,
+      json?.files?.[0]?.url,
+      json?.files?.[0]?.cdnUrl,
+      json?.assets?.[0]?.url,
+      json?.assets?.[0]?.cdnUrl,
+    ].filter(Boolean);
+
+    if (candidates.length > 0) {
+      const chosen = candidates[0];
+      console.log(`[${timestamp}] Asset URL resolved: ${chosen}`);
+      return { ok: true, url: chosen, json };
     }
-    return { ok: true, url: urlCandidate, json };
+
+    // If the API returned 202 and provided upload details but no URL keys we recognize, treat as failure to trigger fallback
+    console.warn(
+      `[${timestamp}] Could not find CDN URL in assets response: ${
+        text || JSON.stringify(json)
+      }`
+    );
+    return { ok: false, json };
   }
 
   try {
