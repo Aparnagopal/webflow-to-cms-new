@@ -585,13 +585,74 @@ function truncateToMaxLength(value, maxLen) {
 
 // --- NEW: Rehost a remote asset to Webflow Assets API and return CDN URL ---
 
-function getExtFromContentType(ct) {
-  if (!ct) return ".bin";
-  const t = ct.split("/")[1]?.split(";")[0] || "bin";
-  return "." + t.replace(/[^a-z0-9]/gi, "");
-}
-
 async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
+  // Helper to compute SHA-256 hex with Node crypto when available, else Web Crypto
+  async function sha256HexFromBuffer(buf) {
+    try {
+      // Prefer Node's crypto (dynamic import to avoid top-level import)
+      const cryptoModule = await import("crypto");
+      const hash = cryptoModule
+        .createHash("sha256")
+        .update(Buffer.from(buf))
+        .digest("hex");
+      return hash;
+    } catch {
+      try {
+        const wc =
+          globalThis.crypto?.subtle ||
+          (await import("crypto")).webcrypto?.subtle;
+        const hashBuffer = await wc.digest("SHA-256", buf);
+        const bytes = new Uint8Array(hashBuffer);
+        return Array.from(bytes)
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  function getExtFromContentType(ct) {
+    if (!ct) return ".bin";
+    const t = ct.split("/")[1]?.split(";")[0] || "bin";
+    return "." + t.replace(/[^a-z0-9]/gi, "");
+  }
+
+  async function parseCdnUrl(uploadRes) {
+    const text = await uploadRes.text().catch(() => "");
+    let json = {};
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      // not JSON
+    }
+    console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
+    if (!uploadRes.ok) {
+      console.error(
+        `[${timestamp}] Assets upload failed: ${uploadRes.status} - ${
+          text || "(no body)"
+        }`
+      );
+      return { ok: false, json };
+    }
+    const urlCandidate =
+      json?.files?.[0]?.url ||
+      json?.files?.[0]?.cdnUrl ||
+      json?.assets?.[0]?.url ||
+      json?.assets?.[0]?.cdnUrl ||
+      json?.url ||
+      json?.cdnUrl;
+    if (!urlCandidate) {
+      console.warn(
+        `[${timestamp}] Could not find CDN URL in assets response: ${JSON.stringify(
+          json
+        )}`
+      );
+      return { ok: false, json };
+    }
+    return { ok: true, url: urlCandidate, json };
+  }
+
   try {
     console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`);
     const fileRes = await fetch(sourceUrl);
@@ -613,50 +674,20 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       }
     })();
     const extFromPath = (path.split(".").pop() || "").toLowerCase();
+    const ab = await fileRes.arrayBuffer();
+    const buf = Buffer.from(ab);
+    const base64 = buf.toString("base64");
+    const fileHash = await sha256HexFromBuffer(ab); // hex string or null if unavailable
     const guessedExt =
       extFromPath && extFromPath.length <= 5
         ? `.${extFromPath.replace(/[^a-z0-9]/g, "")}`
         : getExtFromContentType(contentType);
-
-    const ab = await fileRes.arrayBuffer();
-    const buf = Buffer.from(ab);
-    const base64 = buf.toString("base64");
     const filename = `upload-${Date.now()}${guessedExt}`;
-
     const uploadUrl = `https://api.webflow.com/v2/sites/${siteId}/assets`;
 
-    async function parseCdnUrl(uploadRes) {
-      const json = await uploadRes.json().catch(() => ({}));
-      console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
-      if (!uploadRes.ok) {
-        console.error(
-          `[${timestamp}] Assets upload failed: ${
-            uploadRes.status
-          } - ${JSON.stringify(json)}`
-        );
-        return { ok: false, json };
-      }
-      const urlCandidate =
-        json?.files?.[0]?.url ||
-        json?.files?.[0]?.cdnUrl ||
-        json?.assets?.[0]?.url ||
-        json?.assets?.[0]?.cdnUrl ||
-        json?.url ||
-        json?.cdnUrl;
-      if (!urlCandidate) {
-        console.warn(
-          `[${timestamp}] Could not find CDN URL in assets response: ${JSON.stringify(
-            json
-          )}`
-        );
-        return { ok: false, json };
-      }
-      return { ok: true, url: urlCandidate, json };
-    }
-
-    // Attempt 1: JSON body (shape A)
+    // Attempt 1: JSON body (Shape A) with required fileHash
     console.log(
-      `[${timestamp}] Uploading to Webflow Assets (JSON A): ${uploadUrl} as ${filename}`
+      `[${timestamp}] Uploading to Webflow Assets (JSON A with fileHash): ${uploadUrl} as ${filename}`
     );
     let res = await fetch(uploadUrl, {
       method: "POST",
@@ -668,7 +699,8 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       body: JSON.stringify({
         fileName: filename,
         contentType,
-        data: base64, // Base64 only
+        data: base64, // base64 only
+        ...(fileHash ? { fileHash } : {}), // include if available
       }),
     });
     let parsed = await parseCdnUrl(res);
@@ -678,9 +710,11 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       );
       return { ok: true, url: parsed.url, raw: parsed.json };
     }
-    console.warn(`[${timestamp}] JSON A upload failed; trying JSON B`);
+    console.warn(
+      `[${timestamp}] JSON A upload failed; trying JSON B (files array) with fileHash`
+    );
 
-    // Attempt 2: JSON body (shape B with files array)
+    // Attempt 2: JSON body (Shape B) with files array + fileHash per file
     res = await fetch(uploadUrl, {
       method: "POST",
       headers: {
@@ -693,7 +727,8 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
           {
             fileName: filename,
             contentType,
-            data: base64, // Base64 only
+            data: base64,
+            ...(fileHash ? { fileHash } : {}),
           },
         ],
       }),
@@ -709,10 +744,11 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       `[${timestamp}] JSON B upload failed; trying multipart fallback`
     );
 
-    // Attempt 3: multipart/form-data fallback
+    // Attempt 3: multipart/form-data fallback (kept for older implementations)
     const form = new FormData();
     form.append("fileName", filename);
     form.append("file", new Blob([ab], { type: contentType }), filename);
+    if (fileHash) form.append("fileHash", fileHash);
 
     const resMultipart = await fetch(uploadUrl, {
       method: "POST",
