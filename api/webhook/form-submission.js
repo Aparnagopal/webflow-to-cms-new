@@ -65,7 +65,7 @@ const FORM_CONFIGS = {
       "anticipated-graduation-date": "anticipated-graduation-date",
       "full-time": "full-time",
       "required-credits": "required-credits",
-      "remaining-credits": "remaining-credits",
+      "remaining-credits": "required-credits",
       gpa: "gpa",
       address: "address",
       city: "city",
@@ -618,6 +618,7 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     return "." + t.replace(/[^a-z0-9]/gi, "");
   }
 
+  // START UPDATED parseCdnUrl
   async function parseCdnUrl(uploadRes) {
     const text = await uploadRes.text().catch(() => "");
     let json = {};
@@ -629,7 +630,7 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
 
     console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
 
-    // Consider 200-299 as potentially successful; Webflow often returns 202 with hostedUrl on success
+    // Consider 200-299 and 202 as potentially successful
     if (!uploadRes.ok && uploadRes.status !== 202) {
       console.error(
         `[${timestamp}] Assets upload failed: ${uploadRes.status} - ${
@@ -654,10 +655,15 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     if (candidates.length > 0) {
       const chosen = candidates[0];
       console.log(`[${timestamp}] Asset URL resolved: ${chosen}`);
-      return { ok: true, url: chosen, json };
+      // Pull asset id and content type when present (JSON A shape)
+      const assetId = json?.id || json?.files?.[0]?.id || json?.assets?.[0]?.id;
+      const contentType =
+        json?.contentType ||
+        json?.files?.[0]?.contentType ||
+        json?.assets?.[0]?.contentType;
+      return { ok: true, url: chosen, assetId, contentType, json };
     }
 
-    // If the API returned 202 and provided upload details but no URL keys we recognize, treat as failure to trigger fallback
     console.warn(
       `[${timestamp}] Could not find CDN URL in assets response: ${
         text || JSON.stringify(json)
@@ -665,6 +671,7 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     );
     return { ok: false, json };
   }
+  // END UPDATED parseCdnUrl
 
   try {
     console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`);
@@ -721,7 +728,15 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       console.log(
         `[${timestamp}] Asset rehosted successfully (JSON A): ${parsed.url}`
       );
-      return { ok: true, url: parsed.url, raw: parsed.json };
+      // START UPDATED SUCCESS RETURN
+      return {
+        ok: true,
+        url: parsed.url,
+        assetId: parsed.assetId,
+        contentType: parsed.contentType,
+        raw: parsed.json,
+      };
+      // END UPDATED SUCCESS RETURN
     }
     console.warn(
       `[${timestamp}] JSON A upload failed; trying JSON B (files array) with fileHash`
@@ -751,7 +766,15 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       console.log(
         `[${timestamp}] Asset rehosted successfully (JSON B): ${parsed.url}`
       );
-      return { ok: true, url: parsed.url, raw: parsed.json };
+      // START UPDATED SUCCESS RETURN
+      return {
+        ok: true,
+        url: parsed.url,
+        assetId: parsed.assetId,
+        contentType: parsed.contentType,
+        raw: parsed.json,
+      };
+      // END UPDATED SUCCESS RETURN
     }
     console.warn(
       `[${timestamp}] JSON B upload failed; trying multipart fallback`
@@ -776,7 +799,15 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       console.log(
         `[${timestamp}] Asset rehosted successfully (multipart): ${parsed.url}`
       );
-      return { ok: true, url: parsed.url, raw: parsed.json };
+      // START UPDATED SUCCESS RETURN
+      return {
+        ok: true,
+        url: parsed.url,
+        assetId: parsed.assetId,
+        contentType: parsed.contentType,
+        raw: parsed.json,
+      };
+      // END UPDATED SUCCESS RETURN
     }
 
     console.warn(
@@ -958,6 +989,9 @@ async function ensureStudentRecordForUser({
     // Track original URL for possible text fallback if rehost fails
     let fallbackPhotoUrlText = storyUrl || null;
 
+    // START UPDATED ASSET HANDLING
+    let assetFileId = null; // NEW: asset file id variable
+
     // Rehost image if needed
     let finalCampaignPhotoUrl = null;
     if (storyUrl) {
@@ -972,6 +1006,7 @@ async function ensureStudentRecordForUser({
         });
         if (rehost.ok && rehost.url) {
           finalCampaignPhotoUrl = rehost.url;
+          assetFileId = rehost.assetId || null; // Set assetFileId
           console.log(`[${timestamp}] Using rehosted campaign photo URL`);
           // We no longer need the fallback text url if rehost succeeded
           fallbackPhotoUrlText = null;
@@ -989,6 +1024,7 @@ async function ensureStudentRecordForUser({
         fallbackPhotoUrlText = null;
       }
     }
+    // END UPDATED ASSET HANDLING
 
     // Build fieldData with resolved keys only if present
     const fieldData = {};
@@ -1002,8 +1038,11 @@ async function ensureStudentRecordForUser({
     if (resolved.campaignGoal && goal !== undefined)
       fieldData[resolved.campaignGoal] = goal;
 
-    // Prefer finalCampaignPhotoUrl in the image field, else save original URL in a text fallback field if available
-    if (finalCampaignPhotoUrl) {
+    // START UPDATED IMAGE FIELD HANDLING
+    // Prefer asset fileId for image fields to avoid remote import issues
+    if (resolved.campaignPhoto && assetFileId) {
+      fieldData[resolved.campaignPhoto] = { fileId: assetFileId };
+    } else if (finalCampaignPhotoUrl) {
       if (
         resolved.campaignPhoto &&
         !isForbiddenAssetHost(finalCampaignPhotoUrl)
@@ -1049,6 +1088,7 @@ async function ensureStudentRecordForUser({
         );
       }
     }
+    // END UPDATED IMAGE FIELD HANDLING
 
     // Optional: store full letter in a separate long-text field if it exists
     if (
@@ -1089,11 +1129,12 @@ async function ensureStudentRecordForUser({
       ],
     };
 
+    // START UPDATED CREATE POST BLOCK WITH RETRY
     console.log(
       `[${timestamp}] Creating Student record with payload:`,
       JSON.stringify(createPayload, null, 2)
     );
-    const createRes = await fetch(
+    let createRes = await fetch(
       `https://api.webflow.com/v2/collections/${studentCollectionId}/items`,
       {
         method: "POST",
@@ -1105,17 +1146,91 @@ async function ensureStudentRecordForUser({
         body: JSON.stringify(createPayload),
       }
     );
+
     if (!createRes.ok) {
       const errText = await createRes.text();
+      const isUnsupportedType =
+        /Unsupported file type|Remote file failed to import/i.test(
+          errText || ""
+        );
+
+      if (isUnsupportedType) {
+        console.warn(
+          `[${timestamp}] Image import rejected. Retrying without image field and saving URL to text field.`
+        );
+
+        // Strip image field and save URL to a text field if available
+        const fd = { ...(createPayload.items[0].fieldData || {}) };
+        if (resolved.campaignPhoto && fd[resolved.campaignPhoto]) {
+          delete fd[resolved.campaignPhoto];
+        }
+
+        const fallbackUrl =
+          finalCampaignPhotoUrl || fallbackPhotoUrlText || null;
+
+        if (fallbackUrl) {
+          const photoUrlTextKey = resolveFieldKey(schema, [
+            "campaign-photo-url",
+            "photo-url",
+            "image-url",
+            "cover-image-url",
+            "campaign-photo-link",
+            "photo-link",
+            "image-link",
+          ]);
+          if (photoUrlTextKey) {
+            fd[photoUrlTextKey] = fallbackUrl;
+            console.log(
+              `[${timestamp}] Saved image URL to text field "${photoUrlTextKey}" on retry.`
+            );
+          }
+        }
+
+        const retryPayload = {
+          items: [
+            {
+              ...createPayload.items[0],
+              fieldData: fd,
+            },
+          ],
+        };
+
+        console.log(
+          `[${timestamp}] Retrying Student record creation without image:`,
+          JSON.stringify(retryPayload, null, 2)
+        );
+        createRes = await fetch(
+          `https://api.webflow.com/v2/collections/${studentCollectionId}/items`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "accept-version": "2.0.0",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(retryPayload),
+          }
+        );
+      } else {
+        console.error(
+          `[${timestamp}] Failed to create Student record: ${createRes.status} - ${errText}`
+        );
+        return { created: false, error: errText, status: createRes.status };
+      }
+    }
+
+    if (!createRes.ok) {
+      const finalErr = await createRes.text();
       console.error(
-        `[${timestamp}] Failed to create Student record: ${createRes.status} - ${errText}`
+        `[${timestamp}] Failed to create Student record after retry: ${createRes.status} - ${finalErr}`
       );
-      return { created: false, error: errText, status: createRes.status };
+      return { created: false, error: finalErr, status: createRes.status };
     }
 
     const createdJson = await createRes.json();
     const newId = createdJson.items?.[0]?.id;
     console.log(`[${timestamp}] Student record created. ID: ${newId}`);
+    // END UPDATED CREATE POST BLOCK WITH RETRY
 
     let publishResult = { success: false };
     if (newId) {
