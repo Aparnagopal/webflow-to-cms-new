@@ -619,11 +619,13 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     const filename = `upload-${Date.now()}${guessedExt}`;
 
     const form = new FormData();
+    // Required by Webflow Assets API v2
+    form.append("fileName", filename);
     form.append("file", blob, filename);
 
     const uploadUrl = `https://api.webflow.com/v2/sites/${siteId}/assets`;
     console.log(
-      `[${timestamp}] Uploading to Webflow Assets: ${uploadUrl} as ${filename} (${contentType})`
+      `[${timestamp}] Uploading to Webflow Assets: ${uploadUrl} as ${filename} (${contentType}) with fileName`
     );
     const uploadRes = await fetch(uploadUrl, {
       method: "POST",
@@ -646,7 +648,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       };
     }
 
-    // Try common shapes
     const urlCandidate =
       json?.files?.[0]?.url ||
       json?.files?.[0]?.cdnUrl ||
