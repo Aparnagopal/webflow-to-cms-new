@@ -585,6 +585,12 @@ function truncateToMaxLength(value, maxLen) {
 
 // --- NEW: Rehost a remote asset to Webflow Assets API and return CDN URL ---
 
+function getExtFromContentType(ct) {
+  if (!ct) return ".bin";
+  const t = ct.split("/")[1]?.split(";")[0] || "bin";
+  return "." + t.replace(/[^a-z0-9]/gi, "");
+}
+
 async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
   try {
     console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`);
@@ -610,63 +616,124 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     const guessedExt =
       extFromPath && extFromPath.length <= 5
         ? `.${extFromPath.replace(/[^a-z0-9]/g, "")}`
-        : contentType.startsWith("image/")
-        ? `.${contentType.split("/")[1]?.split(";")[0] || "bin"}`
-        : ".bin";
+        : getExtFromContentType(contentType);
 
     const ab = await fileRes.arrayBuffer();
-    const blob = new Blob([ab], { type: contentType });
+    const buf = Buffer.from(ab);
+    const base64 = buf.toString("base64");
     const filename = `upload-${Date.now()}${guessedExt}`;
 
-    const form = new FormData();
-    // Required by Webflow Assets API v2
-    form.append("fileName", filename);
-    form.append("file", blob, filename);
-
     const uploadUrl = `https://api.webflow.com/v2/sites/${siteId}/assets`;
+
+    async function parseCdnUrl(uploadRes) {
+      const json = await uploadRes.json().catch(() => ({}));
+      console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
+      if (!uploadRes.ok) {
+        console.error(
+          `[${timestamp}] Assets upload failed: ${
+            uploadRes.status
+          } - ${JSON.stringify(json)}`
+        );
+        return { ok: false, json };
+      }
+      const urlCandidate =
+        json?.files?.[0]?.url ||
+        json?.files?.[0]?.cdnUrl ||
+        json?.assets?.[0]?.url ||
+        json?.assets?.[0]?.cdnUrl ||
+        json?.url ||
+        json?.cdnUrl;
+      if (!urlCandidate) {
+        console.warn(
+          `[${timestamp}] Could not find CDN URL in assets response: ${JSON.stringify(
+            json
+          )}`
+        );
+        return { ok: false, json };
+      }
+      return { ok: true, url: urlCandidate, json };
+    }
+
+    // Attempt 1: JSON body (shape A)
     console.log(
-      `[${timestamp}] Uploading to Webflow Assets: ${uploadUrl} as ${filename} (${contentType}) with fileName`
+      `[${timestamp}] Uploading to Webflow Assets (JSON A): ${uploadUrl} as ${filename}`
     );
-    const uploadRes = await fetch(uploadUrl, {
+    let res = await fetch(uploadUrl, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "accept-version": "2.0.0" },
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "accept-version": "2.0.0",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: filename,
+        contentType,
+        data: base64, // Base64 only
+      }),
+    });
+    let parsed = await parseCdnUrl(res);
+    if (parsed.ok) {
+      console.log(
+        `[${timestamp}] Asset rehosted successfully (JSON A): ${parsed.url}`
+      );
+      return { ok: true, url: parsed.url, raw: parsed.json };
+    }
+    console.warn(`[${timestamp}] JSON A upload failed; trying JSON B`);
+
+    // Attempt 2: JSON body (shape B with files array)
+    res = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "accept-version": "2.0.0",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        files: [
+          {
+            fileName: filename,
+            contentType,
+            data: base64, // Base64 only
+          },
+        ],
+      }),
+    });
+    parsed = await parseCdnUrl(res);
+    if (parsed.ok) {
+      console.log(
+        `[${timestamp}] Asset rehosted successfully (JSON B): ${parsed.url}`
+      );
+      return { ok: true, url: parsed.url, raw: parsed.json };
+    }
+    console.warn(
+      `[${timestamp}] JSON B upload failed; trying multipart fallback`
+    );
+
+    // Attempt 3: multipart/form-data fallback
+    const form = new FormData();
+    form.append("fileName", filename);
+    form.append("file", new Blob([ab], { type: contentType }), filename);
+
+    const resMultipart = await fetch(uploadUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "accept-version": "2.0.0",
+      },
       body: form,
     });
-
-    const json = await uploadRes.json().catch(() => ({}));
-    console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
-    if (!uploadRes.ok) {
-      console.error(
-        `[${timestamp}] Assets upload failed: ${
-          uploadRes.status
-        } - ${JSON.stringify(json)}`
+    parsed = await parseCdnUrl(resMultipart);
+    if (parsed.ok) {
+      console.log(
+        `[${timestamp}] Asset rehosted successfully (multipart): ${parsed.url}`
       );
-      return {
-        ok: false,
-        reason: `assets-upload-failed-${uploadRes.status}`,
-        error: json,
-      };
+      return { ok: true, url: parsed.url, raw: parsed.json };
     }
 
-    const urlCandidate =
-      json?.files?.[0]?.url ||
-      json?.files?.[0]?.cdnUrl ||
-      json?.assets?.[0]?.url ||
-      json?.assets?.[0]?.cdnUrl ||
-      json?.url ||
-      json?.cdnUrl;
-
-    if (!urlCandidate) {
-      console.warn(
-        `[${timestamp}] Could not find CDN URL in assets response: ${JSON.stringify(
-          json
-        )}`
-      );
-      return { ok: false, reason: "missing-url", raw: json };
-    }
-
-    console.log(`[${timestamp}] Asset rehosted successfully: ${urlCandidate}`);
-    return { ok: true, url: urlCandidate, raw: json };
+    console.warn(
+      `[${timestamp}] All rehost attempts failed; will fall back to text field if available.`
+    );
+    return { ok: false, reason: "all-attempts-failed", error: parsed.json };
   } catch (e) {
     console.error(`[${timestamp}] Error rehosting asset:`, e.message);
     return { ok: false, reason: "exception", error: e.message };
