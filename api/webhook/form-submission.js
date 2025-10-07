@@ -65,7 +65,7 @@ const FORM_CONFIGS = {
       "anticipated-graduation-date": "anticipated-graduation-date",
       "full-time": "full-time",
       "required-credits": "required-credits",
-      "remaining-credits": "required-credits",
+      "remaining-credits": "remaining-credits", // Fixed typo here
       gpa: "gpa",
       address: "address",
       city: "city",
@@ -117,10 +117,11 @@ const FORM_CONFIGS = {
         const formAction = formData["form-action"];
         if (formAction === "save") return "Draft";
         if (formAction === "submit") return "Submitted";
-        const hasRequiredSignatures =
-          formData["disclosure-signed-name"] && formData["form-signed-name"];
-        const hasAcceptedTerms = formData["terms-acceptance-check"] === "true";
-        const hasAffirmation = formData["affirmation-check"] === "true";
+        const hasRequiredSignatures = !!(
+          formData["disclosure-signed-name"] && formData["form-signed-name"]
+        );
+        const hasAcceptedTerms = isChecked(formData["terms-acceptance-check"]);
+        const hasAffirmation = isChecked(formData["affirmation-check"]);
         if (hasRequiredSignatures && hasAcceptedTerms && hasAffirmation)
           return "Submitted";
         return "Draft";
@@ -208,6 +209,20 @@ function isForbiddenAssetHost(urlStr) {
 }
 
 // Add this helper immediately after the isForbiddenAssetHost() utility:
+function isChecked(value) {
+  const s = String(value ?? "")
+    .toLowerCase()
+    .trim();
+  return (
+    s === "true" ||
+    s === "on" ||
+    s === "1" ||
+    s === "yes" ||
+    s === "checked" ||
+    value === true
+  );
+}
+
 function normalizeToCdnUrl(urlStr, siteId) {
   try {
     if (!urlStr || !siteId) return urlStr;
@@ -369,6 +384,102 @@ async function checkForExistingRecord(
   } catch (error) {
     console.error(
       `[${timestamp}] Error checking for existing record:`,
+      error.message
+    );
+    return null;
+  }
+}
+
+// Add this next to checkForExistingRecord()
+async function findExistingRecordByName(
+  userName,
+  updateConfig,
+  collectionId,
+  apiKey,
+  timestamp
+) {
+  try {
+    if (!updateConfig.enabled) return null;
+    console.log(
+      `[${timestamp}] Looking for existing record by name (any status): "${userName}" in collection ${collectionId}`
+    );
+    const response = await fetch(
+      `https://api.webflow.com/v2/collections/${collectionId}/items`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "accept-version": "2.0.0",
+        },
+      }
+    );
+    console.log(
+      `[${timestamp}] Any-status record lookup response status: ${response.status}`
+    );
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(
+        `[${timestamp}] Failed to fetch items for any-status lookup: ${response.status} - ${errorText}`
+      );
+      return null;
+    }
+    const data = await response.json();
+    const items = Array.isArray(data.items) ? data.items : [];
+    const lookupKey = updateConfig.lookupField || "name";
+    const statusKey = updateConfig.statusField || "application-status";
+
+    const matches = items.filter((item) => {
+      const nameValue = item.fieldData?.[lookupKey];
+      return (
+        nameValue &&
+        nameValue.toLowerCase().trim() === String(userName).toLowerCase().trim()
+      );
+    });
+    if (matches.length === 0) {
+      console.log(`[${timestamp}] No records match name "${userName}"`);
+      return null;
+    }
+
+    // Prefer a Draft if available
+    const draft = matches.find((it) => {
+      const s = (it.fieldData?.[statusKey] || "").toLowerCase().trim();
+      return s === "draft";
+    });
+    if (draft) {
+      console.log(
+        `[${timestamp}] Found Draft record for "${userName}": ${draft.id}`
+      );
+      return {
+        id: draft.id,
+        item: draft,
+        canUpdate: true,
+        reason: "draft-preferred",
+      };
+    }
+
+    // Otherwise take the most recently updated/created item
+    function timeOf(it) {
+      const updated = Date.parse(it.updatedOn || it.lastUpdated || "");
+      const created = Date.parse(it.createdOn || it.created || "");
+      return Number.isFinite(updated)
+        ? updated
+        : Number.isFinite(created)
+        ? created
+        : 0;
+    }
+    const sorted = [...matches].sort((a, b) => timeOf(b) - timeOf(a));
+    const chosen = sorted[0];
+    console.log(
+      `[${timestamp}] No Draft found; reusing latest record for "${userName}": ${chosen.id} (will update in place)`
+    );
+    return {
+      id: chosen.id,
+      item: chosen,
+      canUpdate: true,
+      reason: "latest-by-time",
+    };
+  } catch (error) {
+    console.error(
+      `[${timestamp}] Error in findExistingRecordByName:`,
       error.message
     );
     return null;
@@ -1679,14 +1790,27 @@ export default async function handler(req, res) {
     let existingRecord = null;
     let isUpdate = false;
     if (formConfig.updateExistingRecord?.enabled && extractedData.name) {
-      existingRecord = await checkForExistingRecord(
+      // Use the new any-status lookup
+      const intendedStatus =
+        extractedData[
+          formConfig.statusOverride?.field || "application-status"
+        ] || "Draft";
+      existingRecord = await findExistingRecordByName(
         extractedData.name,
         formConfig.updateExistingRecord,
         formConfig.collectionId,
         process.env.WEBFLOW_API_KEY,
         timestamp
       );
+      // Update if we found any record for this name; this prevents duplicate items.
       isUpdate = !!(existingRecord && existingRecord.canUpdate);
+      console.log(
+        `[${timestamp}] Upsert decision for "${
+          extractedData.name
+        }": intended="${intendedStatus}" isUpdate=${isUpdate} existingId=${
+          existingRecord?.id || "none"
+        }`
+      );
     }
 
     let payload;
