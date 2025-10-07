@@ -913,6 +913,7 @@ async function ensureStudentRecordForUser({
   siteId,
   apiKey,
   timestamp,
+  baseUrl,
 }) {
   try {
     if (!studentCollectionId) {
@@ -1092,7 +1093,7 @@ async function ensureStudentRecordForUser({
           // Optional but recommended logging for clarity:
           if (finalCampaignPhotoUrl !== rehost.url) {
             console.log(
-              `[${timestamp}] Using CDN URL for readiness and CMS: ${finalCampaignPhotoUrl}`
+              `[${timestamp}] Normalized asset URL to CDN: ${finalCampaignPhotoUrl}`
             );
           }
           console.log(
@@ -1106,8 +1107,9 @@ async function ensureStudentRecordForUser({
             // URL is ready to be consumed as an image by the CMS
             fallbackPhotoUrlText = null;
           } else {
+            // Add log line here
             console.warn(
-              `[${timestamp}] Rehosted URL not ready yet; will store in text field instead of image field.`
+              `[${timestamp}] Rehosted URL not ready; will attach via proxy to force import and also save text URL.`
             );
           }
         } else {
@@ -1124,7 +1126,7 @@ async function ensureStudentRecordForUser({
         // Optional but recommended logging for clarity:
         if (finalCampaignPhotoUrl !== storyUrl) {
           console.log(
-            `[${timestamp}] Using CDN URL for readiness and CMS: ${finalCampaignPhotoUrl}`
+            `[${timestamp}] Normalized asset URL to CDN: ${finalCampaignPhotoUrl}`
           );
         }
         console.log(
@@ -1168,7 +1170,43 @@ async function ensureStudentRecordForUser({
       // CMS expects { url: "..." } for image fields
       fieldData[resolved.campaignPhoto] = { url: finalCampaignPhotoUrl };
       console.log(`[${timestamp}] Attached campaign photo to image field.`);
-    } else {
+    } else if (
+      (storyUrl || finalCampaignPhotoUrl) &&
+      resolved.campaignPhoto &&
+      baseUrl
+    ) {
+      // Use our proxy URL so Webflow can import immediately
+      const sourceForProxy = storyUrl || finalCampaignPhotoUrl;
+      const proxyUrl = `${baseUrl}/api/proxy-image?src=${encodeURIComponent(
+        sourceForProxy
+      )}`;
+      fieldData[resolved.campaignPhoto] = { url: proxyUrl };
+      console.log(
+        `[${timestamp}] Attached campaign photo via proxy for immediate import: ${proxyUrl}`
+      );
+
+      // Also keep a text URL for observability/backfill if needed
+      const photoUrlTextKey = resolveFieldKey(schema, [
+        "campaign-photo-url",
+        "photo-url",
+        "image-url",
+        "cover-image-url",
+        "campaign-photo-link",
+        "photo-link",
+        "image-link",
+      ]);
+      const urlForText = (() => {
+        const raw =
+          finalCampaignPhotoUrl || fallbackPhotoUrlText || storyUrl || null;
+        return raw ? normalizeToCdnUrl(raw, siteId) : raw;
+      })();
+      if (photoUrlTextKey && urlForText) {
+        fieldData[photoUrlTextKey] = urlForText;
+        console.log(
+          `[${timestamp}] Saved original image URL to text field "${photoUrlTextKey}".`
+        );
+      }
+    } else if (!baseUrl) {
       // Save URL to a text field as a safe fallback
       const photoUrlTextKey = resolveFieldKey(schema, [
         "campaign-photo-url",
@@ -1273,7 +1311,8 @@ async function ensureStudentRecordForUser({
         }
 
         const fallbackUrl = (() => {
-          const raw = finalCampaignPhotoUrl || fallbackPhotoUrlText || null;
+          const raw =
+            finalCampaignPhotoUrl || fallbackPhotoUrlText || storyUrl || null;
           return raw ? normalizeToCdnUrl(raw, siteId) : raw;
         })();
 
@@ -1396,6 +1435,16 @@ export default async function handler(req, res) {
       .status(405)
       .json({ error: "Method not allowed", expected: "POST", timestamp });
   }
+
+  // NEW: compute baseUrl
+  const protoHeader = (req.headers["x-forwarded-proto"] || "https").toString();
+  const hostHeader = (
+    req.headers["x-forwarded-host"] ||
+    req.headers.host ||
+    ""
+  ).toString();
+  const baseUrl = hostHeader ? `${protoHeader}://${hostHeader}` : "";
+  console.log(`[${timestamp}] Computed baseUrl: ${baseUrl}`);
 
   try {
     const automatedCheck = isAutomatedRequest(req);
@@ -1755,6 +1804,7 @@ export default async function handler(req, res) {
         siteId,
         apiKey: process.env.WEBFLOW_API_KEY,
         timestamp,
+        baseUrl, // NEW
       });
       if (studentCreationResult.created) {
         console.log(
