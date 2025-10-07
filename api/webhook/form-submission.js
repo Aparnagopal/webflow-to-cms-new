@@ -207,6 +207,25 @@ function isForbiddenAssetHost(urlStr) {
   return host === "webflow.com" || host.endsWith(".webflow.com");
 }
 
+// Add this helper immediately after the isForbiddenAssetHost() utility:
+function normalizeToCdnUrl(urlStr, siteId) {
+  try {
+    if (!urlStr || !siteId) return urlStr;
+    const u = new URL(urlStr);
+    const isS3Webflow =
+      u.hostname === "s3.amazonaws.com" &&
+      u.pathname.startsWith(`/webflow-prod-assets/${siteId}/`);
+    if (isS3Webflow) {
+      const tail = u.pathname.split(`/webflow-prod-assets/${siteId}/`)[1] || "";
+      const cdnUrl = `https://cdn.prod.website-files.com/${siteId}/${tail}`;
+      return cdnUrl;
+    }
+    return urlStr;
+  } catch {
+    return urlStr;
+  }
+}
+
 async function publishCmsItems(itemIds, collectionId, apiKey, timestamp) {
   try {
     console.log(
@@ -618,7 +637,7 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     return "." + t.replace(/[^a-z0-9]/gi, "");
   }
 
-  // --- START: Updated parseCdnUrl helper ---
+  // Inside rehostToWebflowAssets(), REPLACE the inner parseCdnUrl(uploadRes) function with the following:
   async function parseCdnUrl(uploadRes) {
     const text = await uploadRes.text().catch(() => "");
     let json = {};
@@ -639,10 +658,10 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       return { ok: false, json };
     }
 
-    // Prefer assetUrl over hostedUrl to reduce CDN warm-up issues
+    // Prefer hostedUrl (public CDN) over assetUrl (private S3)
     const candidateMap = {
-      assetUrl: json?.assetUrl,
       hostedUrl: json?.hostedUrl,
+      assetUrl: json?.assetUrl,
       url: json?.url,
       cdnUrl: json?.cdnUrl,
       files0url: json?.files?.[0]?.url,
@@ -651,8 +670,8 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       assets0cdnUrl: json?.assets?.[0]?.cdnUrl,
     };
     const order = [
-      "assetUrl",
       "hostedUrl",
+      "assetUrl",
       "url",
       "cdnUrl",
       "files0url",
@@ -681,7 +700,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     );
     return { ok: false, json };
   }
-  // --- END: Updated parseCdnUrl helper ---
 
   try {
     console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`);
@@ -735,12 +753,14 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     });
     let parsed = await parseCdnUrl(res);
     if (parsed.ok) {
-      console.log(
-        `[${timestamp}] Asset rehosted successfully (JSON A): ${parsed.url}`
-      );
+      // Still inside rehostToWebflowAssets(), in EACH place where we return after a successful parse, NORMALIZE the URL to CDN before returning.
+      const finalUrlA = normalizeToCdnUrl(parsed.url, siteId);
+      if (finalUrlA !== parsed.url) {
+        console.log(`[${timestamp}] Normalized asset URL to CDN: ${finalUrlA}`);
+      }
       return {
         ok: true,
-        url: parsed.url,
+        url: finalUrlA,
         assetId: parsed.assetId,
         contentType: parsed.contentType,
         raw: parsed.json,
@@ -771,12 +791,14 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     });
     parsed = await parseCdnUrl(res);
     if (parsed.ok) {
-      console.log(
-        `[${timestamp}] Asset rehosted successfully (JSON B): ${parsed.url}`
-      );
+      // Still inside rehostToWebflowAssets(), in EACH place where we return after a successful parse, NORMALIZE the URL to CDN before returning.
+      const finalUrlB = normalizeToCdnUrl(parsed.url, siteId);
+      if (finalUrlB !== parsed.url) {
+        console.log(`[${timestamp}] Normalized asset URL to CDN: ${finalUrlB}`);
+      }
       return {
         ok: true,
-        url: parsed.url,
+        url: finalUrlB,
         assetId: parsed.assetId,
         contentType: parsed.contentType,
         raw: parsed.json,
@@ -802,12 +824,14 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     });
     parsed = await parseCdnUrl(resMultipart);
     if (parsed.ok) {
-      console.log(
-        `[${timestamp}] Asset rehosted successfully (multipart): ${parsed.url}`
-      );
+      // Still inside rehostToWebflowAssets(), in EACH place where we return after a successful parse, NORMALIZE the URL to CDN before returning.
+      const finalUrlC = normalizeToCdnUrl(parsed.url, siteId);
+      if (finalUrlC !== parsed.url) {
+        console.log(`[${timestamp}] Normalized asset URL to CDN: ${finalUrlC}`);
+      }
       return {
         ok: true,
-        url: parsed.url,
+        url: finalUrlC,
         assetId: parsed.assetId,
         contentType: parsed.contentType,
         raw: parsed.json,
@@ -1063,8 +1087,17 @@ async function ensureStudentRecordForUser({
           timestamp,
         });
         if (rehost.ok && rehost.url) {
-          finalCampaignPhotoUrl = rehost.url;
-          console.log(`[${timestamp}] Using rehosted campaign photo URL`);
+          // 1) After a successful rehost:
+          finalCampaignPhotoUrl = normalizeToCdnUrl(rehost.url, siteId);
+          // Optional but recommended logging for clarity:
+          if (finalCampaignPhotoUrl !== rehost.url) {
+            console.log(
+              `[${timestamp}] Using CDN URL for readiness and CMS: ${finalCampaignPhotoUrl}`
+            );
+          }
+          console.log(
+            `[${timestamp}] Rehosted campaign photo URL: ${finalCampaignPhotoUrl}`
+          );
           finalCampaignPhotoReady = await waitForAssetReady(
             finalCampaignPhotoUrl,
             { timestamp }
@@ -1086,7 +1119,17 @@ async function ensureStudentRecordForUser({
         }
       } else {
         // Allowed host already; still verify readiness lightly
-        finalCampaignPhotoUrl = storyUrl;
+        // 2) In the "allowed host already" else-branch:
+        finalCampaignPhotoUrl = normalizeToCdnUrl(storyUrl, siteId);
+        // Optional but recommended logging for clarity:
+        if (finalCampaignPhotoUrl !== storyUrl) {
+          console.log(
+            `[${timestamp}] Using CDN URL for readiness and CMS: ${finalCampaignPhotoUrl}`
+          );
+        }
+        console.log(
+          `[${timestamp}] Using direct campaign photo URL: ${finalCampaignPhotoUrl}`
+        );
         finalCampaignPhotoReady = await waitForAssetReady(
           finalCampaignPhotoUrl,
           { timestamp }
@@ -1136,7 +1179,11 @@ async function ensureStudentRecordForUser({
         "photo-link",
         "image-link",
       ]);
-      const urlForText = finalCampaignPhotoUrl || fallbackPhotoUrlText || null;
+      // 3) When computing urlForText for the fallback text field:
+      const urlForText = (() => {
+        const raw = finalCampaignPhotoUrl || fallbackPhotoUrlText || null;
+        return raw ? normalizeToCdnUrl(raw, siteId) : raw;
+      })();
       if (photoUrlTextKey && urlForText) {
         fieldData[photoUrlTextKey] = urlForText;
         console.log(
@@ -1225,8 +1272,10 @@ async function ensureStudentRecordForUser({
           delete fd[resolved.campaignPhoto];
         }
 
-        const fallbackUrl =
-          finalCampaignPhotoUrl || fallbackPhotoUrlText || null;
+        const fallbackUrl = (() => {
+          const raw = finalCampaignPhotoUrl || fallbackPhotoUrlText || null;
+          return raw ? normalizeToCdnUrl(raw, siteId) : raw;
+        })();
 
         if (fallbackUrl) {
           const photoUrlTextKey = resolveFieldKey(schema, [
