@@ -820,6 +820,39 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
   }
 }
 
+// Poll the CDN URL until it responds with an image content-type (or we give up)
+async function waitForAssetReady(
+  url,
+  {
+    maxAttempts = 10,
+    delayMs = 700,
+    expectedPrefix = "image/",
+    timestamp = new Date().toISOString(),
+  } = {}
+) {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const head = await fetch(url, { method: "HEAD" });
+      const ct = head.headers.get("content-type") || "";
+      const ok = head.ok && ct.toLowerCase().startsWith(expectedPrefix);
+      console.log(
+        `[${timestamp}] Asset readiness check #${attempt}: ${head.status} content-type="${ct}" ok=${ok}`
+      );
+      if (ok) return true;
+    } catch (e) {
+      console.warn(
+        `[${timestamp}] Asset readiness HEAD failed on attempt #${attempt}: ${e.message}`
+      );
+    }
+    await sleep(delayMs);
+  }
+  console.warn(
+    `[${timestamp}] Asset did not become ready after ${maxAttempts} attempts. Proceeding anyway.`
+  );
+  return false;
+}
+
 /**
  * Ensure a Student record exists for a given user-name when an application is Submitted.
  * Aligns to current Student collection schema by fetching fields and resolving keys at runtime.
@@ -990,10 +1023,9 @@ async function ensureStudentRecordForUser({
     let fallbackPhotoUrlText = storyUrl || null;
 
     // START UPDATED ASSET HANDLING
-    let assetFileId = null; // NEW: asset file id variable
-
     // Rehost image if needed
     let finalCampaignPhotoUrl = null;
+
     if (storyUrl) {
       const looksLikeFormUpload =
         /formUploads/i.test(storyUrl) || isForbiddenAssetHost(storyUrl);
@@ -1006,8 +1038,9 @@ async function ensureStudentRecordForUser({
         });
         if (rehost.ok && rehost.url) {
           finalCampaignPhotoUrl = rehost.url;
-          assetFileId = rehost.assetId || null; // Set assetFileId
           console.log(`[${timestamp}] Using rehosted campaign photo URL`);
+          // Wait until CDN serves the correct content type to avoid "application/xml" remote import issues
+          await waitForAssetReady(finalCampaignPhotoUrl, { timestamp });
           // We no longer need the fallback text url if rehost succeeded
           fallbackPhotoUrlText = null;
         } else {
@@ -1039,15 +1072,14 @@ async function ensureStudentRecordForUser({
       fieldData[resolved.campaignGoal] = goal;
 
     // START UPDATED IMAGE FIELD HANDLING
-    // Prefer asset fileId for image fields to avoid remote import issues
-    if (resolved.campaignPhoto && assetFileId) {
-      fieldData[resolved.campaignPhoto] = { fileId: assetFileId };
-    } else if (finalCampaignPhotoUrl) {
+    // Prefer URL object for image fields (CMS expects { url: "..." })
+    if (finalCampaignPhotoUrl) {
       if (
         resolved.campaignPhoto &&
         !isForbiddenAssetHost(finalCampaignPhotoUrl)
       ) {
-        fieldData[resolved.campaignPhoto] = finalCampaignPhotoUrl;
+        // Use object form to satisfy validation: "Expected value to have a 'url' field"
+        fieldData[resolved.campaignPhoto] = { url: finalCampaignPhotoUrl };
       } else {
         // Save to a text field if image field is missing/forbidden
         const photoUrlTextKey = resolveFieldKey(schema, [
