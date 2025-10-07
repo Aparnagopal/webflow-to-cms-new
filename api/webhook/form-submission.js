@@ -618,7 +618,7 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     return "." + t.replace(/[^a-z0-9]/gi, "");
   }
 
-  // START UPDATED parseCdnUrl
+  // --- START: Updated parseCdnUrl helper ---
   async function parseCdnUrl(uploadRes) {
     const text = await uploadRes.text().catch(() => "");
     let json = {};
@@ -630,7 +630,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
 
     console.log(`[${timestamp}] Assets upload status: ${uploadRes.status}`);
 
-    // Consider 200-299 and 202 as potentially successful
     if (!uploadRes.ok && uploadRes.status !== 202) {
       console.error(
         `[${timestamp}] Assets upload failed: ${uploadRes.status} - ${
@@ -640,28 +639,39 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       return { ok: false, json };
     }
 
-    // Accept any of these as the CDN URL, prioritizing hostedUrl (CDN) over S3 URL
-    const candidates = [
-      json?.hostedUrl,
-      json?.assetUrl,
-      json?.url,
-      json?.cdnUrl,
-      json?.files?.[0]?.url,
-      json?.files?.[0]?.cdnUrl,
-      json?.assets?.[0]?.url,
-      json?.assets?.[0]?.cdnUrl,
-    ].filter(Boolean);
-
-    if (candidates.length > 0) {
-      const chosen = candidates[0];
-      console.log(`[${timestamp}] Asset URL resolved: ${chosen}`);
-      // Pull asset id and content type when present (JSON A shape)
+    // Prefer assetUrl over hostedUrl to reduce CDN warm-up issues
+    const candidateMap = {
+      assetUrl: json?.assetUrl,
+      hostedUrl: json?.hostedUrl,
+      url: json?.url,
+      cdnUrl: json?.cdnUrl,
+      files0url: json?.files?.[0]?.url,
+      files0cdnUrl: json?.files?.[0]?.cdnUrl,
+      assets0url: json?.assets?.[0]?.url,
+      assets0cdnUrl: json?.assets?.[0]?.cdnUrl,
+    };
+    const order = [
+      "assetUrl",
+      "hostedUrl",
+      "url",
+      "cdnUrl",
+      "files0url",
+      "files0cdnUrl",
+      "assets0url",
+      "assets0cdnUrl",
+    ];
+    const chosenKey = order.find((k) => !!candidateMap[k]);
+    if (chosenKey) {
+      const chosen = candidateMap[chosenKey];
+      console.log(
+        `[${timestamp}] Asset URL resolved (${chosenKey}): ${chosen}`
+      );
       const assetId = json?.id || json?.files?.[0]?.id || json?.assets?.[0]?.id;
       const contentType =
         json?.contentType ||
         json?.files?.[0]?.contentType ||
         json?.assets?.[0]?.contentType;
-      return { ok: true, url: chosen, assetId, contentType, json };
+      return { ok: true, url: chosen, assetId, contentType, json, chosenKey };
     }
 
     console.warn(
@@ -671,7 +681,7 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     );
     return { ok: false, json };
   }
-  // END UPDATED parseCdnUrl
+  // --- END: Updated parseCdnUrl helper ---
 
   try {
     console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`);
@@ -728,7 +738,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       console.log(
         `[${timestamp}] Asset rehosted successfully (JSON A): ${parsed.url}`
       );
-      // START UPDATED SUCCESS RETURN
       return {
         ok: true,
         url: parsed.url,
@@ -736,7 +745,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
         contentType: parsed.contentType,
         raw: parsed.json,
       };
-      // END UPDATED SUCCESS RETURN
     }
     console.warn(
       `[${timestamp}] JSON A upload failed; trying JSON B (files array) with fileHash`
@@ -766,7 +774,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       console.log(
         `[${timestamp}] Asset rehosted successfully (JSON B): ${parsed.url}`
       );
-      // START UPDATED SUCCESS RETURN
       return {
         ok: true,
         url: parsed.url,
@@ -774,7 +781,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
         contentType: parsed.contentType,
         raw: parsed.json,
       };
-      // END UPDATED SUCCESS RETURN
     }
     console.warn(
       `[${timestamp}] JSON B upload failed; trying multipart fallback`
@@ -799,7 +805,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
       console.log(
         `[${timestamp}] Asset rehosted successfully (multipart): ${parsed.url}`
       );
-      // START UPDATED SUCCESS RETURN
       return {
         ok: true,
         url: parsed.url,
@@ -807,7 +812,6 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
         contentType: parsed.contentType,
         raw: parsed.json,
       };
-      // END UPDATED SUCCESS RETURN
     }
 
     console.warn(
@@ -824,31 +828,52 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
 async function waitForAssetReady(
   url,
   {
-    maxAttempts = 10,
-    delayMs = 700,
+    maxAttempts = 15,
+    baseDelayMs = 1200,
+    backoffFactor = 1.7,
+    maxDelayMs = 8000,
     expectedPrefix = "image/",
     timestamp = new Date().toISOString(),
   } = {}
 ) {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let delay = baseDelayMs;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
+      // First try HEAD
       const head = await fetch(url, { method: "HEAD" });
-      const ct = head.headers.get("content-type") || "";
-      const ok = head.ok && ct.toLowerCase().startsWith(expectedPrefix);
+      const ctHead = (head.headers.get("content-type") || "").toLowerCase();
+      const okHead = head.ok && ctHead.startsWith(expectedPrefix);
       console.log(
-        `[${timestamp}] Asset readiness check #${attempt}: ${head.status} content-type="${ct}" ok=${ok}`
+        `[${timestamp}] Asset readiness check #${attempt} (HEAD): ${head.status} content-type="${ctHead}" ok=${okHead}`
       );
-      if (ok) return true;
+      if (okHead) return true;
+
+      // Fallback to GET if HEAD not ready/blocked by CDN
+      const getRes = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "image/*" },
+      });
+      const ctGet = (getRes.headers.get("content-type") || "").toLowerCase();
+      const okGet = getRes.ok && ctGet.startsWith(expectedPrefix);
+      console.log(
+        `[${timestamp}] Asset readiness check #${attempt} (GET): ${getRes.status} content-type="${ctGet}" ok=${okGet}`
+      );
+      if (okGet) return true;
     } catch (e) {
       console.warn(
-        `[${timestamp}] Asset readiness HEAD failed on attempt #${attempt}: ${e.message}`
+        `[${timestamp}] Asset readiness check error on attempt #${attempt}: ${e.message}`
       );
     }
-    await sleep(delayMs);
+
+    const jitter = Math.floor(Math.random() * 250);
+    await sleep(Math.min(delay + jitter, maxDelayMs));
+    delay = Math.min(Math.floor(delay * backoffFactor), maxDelayMs);
   }
+
   console.warn(
-    `[${timestamp}] Asset did not become ready after ${maxAttempts} attempts. Proceeding anyway.`
+    `[${timestamp}] Asset did not become ready after ${maxAttempts} attempts. Proceeding without image.`
   );
   return false;
 }
@@ -1023,8 +1048,9 @@ async function ensureStudentRecordForUser({
     let fallbackPhotoUrlText = storyUrl || null;
 
     // START UPDATED ASSET HANDLING
-    // Rehost image if needed
+    // Rehost image if needed; only set image field if it's ready
     let finalCampaignPhotoUrl = null;
+    let finalCampaignPhotoReady = false;
 
     if (storyUrl) {
       const looksLikeFormUpload =
@@ -1039,10 +1065,18 @@ async function ensureStudentRecordForUser({
         if (rehost.ok && rehost.url) {
           finalCampaignPhotoUrl = rehost.url;
           console.log(`[${timestamp}] Using rehosted campaign photo URL`);
-          // Wait until CDN serves the correct content type to avoid "application/xml" remote import issues
-          await waitForAssetReady(finalCampaignPhotoUrl, { timestamp });
-          // We no longer need the fallback text url if rehost succeeded
-          fallbackPhotoUrlText = null;
+          finalCampaignPhotoReady = await waitForAssetReady(
+            finalCampaignPhotoUrl,
+            { timestamp }
+          );
+          if (finalCampaignPhotoReady) {
+            // URL is ready to be consumed as an image by the CMS
+            fallbackPhotoUrlText = null;
+          } else {
+            console.warn(
+              `[${timestamp}] Rehosted URL not ready yet; will store in text field instead of image field.`
+            );
+          }
         } else {
           console.warn(
             `[${timestamp}] Rehost failed (${
@@ -1051,10 +1085,19 @@ async function ensureStudentRecordForUser({
           );
         }
       } else {
-        // Allowed host already
+        // Allowed host already; still verify readiness lightly
         finalCampaignPhotoUrl = storyUrl;
-        // And no need for fallback text
-        fallbackPhotoUrlText = null;
+        finalCampaignPhotoReady = await waitForAssetReady(
+          finalCampaignPhotoUrl,
+          { timestamp }
+        );
+        if (finalCampaignPhotoReady) {
+          fallbackPhotoUrlText = null;
+        } else {
+          console.warn(
+            `[${timestamp}] Provided image URL not ready; will use text field as fallback.`
+          );
+        }
       }
     }
     // END UPDATED ASSET HANDLING
@@ -1072,34 +1115,18 @@ async function ensureStudentRecordForUser({
       fieldData[resolved.campaignGoal] = goal;
 
     // START UPDATED IMAGE FIELD HANDLING
-    // Prefer URL object for image fields (CMS expects { url: "..." })
-    if (finalCampaignPhotoUrl) {
-      if (
-        resolved.campaignPhoto &&
-        !isForbiddenAssetHost(finalCampaignPhotoUrl)
-      ) {
-        // Use object form to satisfy validation: "Expected value to have a 'url' field"
-        fieldData[resolved.campaignPhoto] = { url: finalCampaignPhotoUrl };
-      } else {
-        // Save to a text field if image field is missing/forbidden
-        const photoUrlTextKey = resolveFieldKey(schema, [
-          "campaign-photo-url",
-          "photo-url",
-          "image-url",
-          "cover-image-url",
-          "campaign-photo-link",
-          "photo-link",
-          "image-link",
-        ]);
-        if (photoUrlTextKey) {
-          fieldData[photoUrlTextKey] = finalCampaignPhotoUrl;
-          console.log(
-            `[${timestamp}] Saved image URL to text field "${photoUrlTextKey}" (image field missing/forbidden).`
-          );
-        }
-      }
-    } else if (fallbackPhotoUrlText) {
-      // Rehost unavailable: still save the original URL in a text field if present
+    // Only set the image field if the URL is confirmed "ready"; otherwise save to a text URL field.
+    if (
+      finalCampaignPhotoUrl &&
+      finalCampaignPhotoReady &&
+      resolved.campaignPhoto &&
+      !isForbiddenAssetHost(finalCampaignPhotoUrl)
+    ) {
+      // CMS expects { url: "..." } for image fields
+      fieldData[resolved.campaignPhoto] = { url: finalCampaignPhotoUrl };
+      console.log(`[${timestamp}] Attached campaign photo to image field.`);
+    } else {
+      // Save URL to a text field as a safe fallback
       const photoUrlTextKey = resolveFieldKey(schema, [
         "campaign-photo-url",
         "photo-url",
@@ -1109,14 +1136,15 @@ async function ensureStudentRecordForUser({
         "photo-link",
         "image-link",
       ]);
-      if (photoUrlTextKey) {
-        fieldData[photoUrlTextKey] = fallbackPhotoUrlText;
+      const urlForText = finalCampaignPhotoUrl || fallbackPhotoUrlText || null;
+      if (photoUrlTextKey && urlForText) {
+        fieldData[photoUrlTextKey] = urlForText;
         console.log(
-          `[${timestamp}] Rehost unavailable. Saved original URL to text field "${photoUrlTextKey}".`
+          `[${timestamp}] Saved image URL to text field "${photoUrlTextKey}".`
         );
-      } else {
+      } else if (urlForText) {
         console.log(
-          `[${timestamp}] Rehost unavailable and no photo URL text field found. Proceeding without photo.`
+          `[${timestamp}] No text URL field found; proceeding without storing campaign photo URL.`
         );
       }
     }
