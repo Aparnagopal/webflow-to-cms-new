@@ -748,6 +748,9 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     return "." + t.replace(/[^a-z0-9]/gi, "");
   }
 
+  // Add this helper near the top of rehostToWebflowAssets():
+  const tinySleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   // Inside rehostToWebflowAssets(), REPLACE the inner parseCdnUrl(uploadRes) function with the following:
   async function parseCdnUrl(uploadRes) {
     const text = await uploadRes.text().catch(() => "");
@@ -812,6 +815,47 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     return { ok: false, json };
   }
 
+  // Add this helper immediately before the "try { console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`)" line.
+  async function publishUploadedAsset(assetId) {
+    try {
+      if (!assetId) return { ok: false, reason: "no-asset-id" };
+      console.log(
+        `[${timestamp}] Publishing uploaded asset to CDN... (assetId=${assetId})`
+      );
+      const publishRes = await fetch(
+        `https://api.webflow.com/v2/sites/${siteId}/assets/publish`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "accept-version": "2.0.0",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ assetIds: [assetId] }),
+        }
+      );
+      const status = publishRes.status;
+      let bodyText = "";
+      try {
+        bodyText = await publishRes.text();
+      } catch {
+        // ignore
+      }
+      console.log(
+        `[${timestamp}] Asset publish response: ${status} body="${
+          bodyText?.slice(0, 500) || ""
+        }"`
+      );
+      if (!publishRes.ok && status !== 202) {
+        return { ok: false, status, body: bodyText };
+      }
+      return { ok: true, status, body: bodyText };
+    } catch (pubErr) {
+      console.warn(`[${timestamp}] Failed to publish asset: ${pubErr.message}`);
+      return { ok: false, reason: pubErr.message };
+    }
+  }
+
   try {
     console.log(`[${timestamp}] Rehosting asset from source: ${sourceUrl}`);
     const fileRes = await fetch(sourceUrl);
@@ -864,6 +908,19 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     });
     let parsed = await parseCdnUrl(res);
     if (parsed.ok) {
+      // In the JSON A upload success branch (right after "if (parsed.ok) {"), insert the following lines BEFORE normalizing/returning:
+      if (parsed.assetId) {
+        const pub = await publishUploadedAsset(parsed.assetId);
+        if (!pub.ok) {
+          console.warn(
+            `[${timestamp}] Asset publish did not confirm OK (status=${
+              pub.status || "n/a"
+            }). Continuing...`
+          );
+        }
+        // After each publish call and before returning the URL, add a tiny delay to let the CDN catch up.
+        await tinySleep(250);
+      }
       // Still inside rehostToWebflowAssets(), in EACH place where we return after a successful parse, NORMALIZE the URL to CDN before returning.
       const finalUrlA = normalizeToCdnUrl(parsed.url, siteId);
       if (finalUrlA !== parsed.url) {
@@ -902,6 +959,19 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     });
     parsed = await parseCdnUrl(res);
     if (parsed.ok) {
+      // In the JSON B upload success branch (right after "if (parsed.ok) {"), insert the same snippet:
+      if (parsed.assetId) {
+        const pub = await publishUploadedAsset(parsed.assetId);
+        if (!pub.ok) {
+          console.warn(
+            `[${timestamp}] Asset publish did not confirm OK (status=${
+              pub.status || "n/a"
+            }). Continuing...`
+          );
+        }
+        // After each publish call and before returning the URL, add a tiny delay to let the CDN catch up.
+        await tinySleep(250);
+      }
       // Still inside rehostToWebflowAssets(), in EACH place where we return after a successful parse, NORMALIZE the URL to CDN before returning.
       const finalUrlB = normalizeToCdnUrl(parsed.url, siteId);
       if (finalUrlB !== parsed.url) {
@@ -935,6 +1005,19 @@ async function rehostToWebflowAssets({ sourceUrl, siteId, apiKey, timestamp }) {
     });
     parsed = await parseCdnUrl(resMultipart);
     if (parsed.ok) {
+      // In the multipart/form-data success branch (right after "if (parsed.ok) {"), insert the same snippet:
+      if (parsed.assetId) {
+        const pub = await publishUploadedAsset(parsed.assetId);
+        if (!pub.ok) {
+          console.warn(
+            `[${timestamp}] Asset publish did not confirm OK (status=${
+              pub.status || "n/a"
+            }). Continuing...`
+          );
+        }
+        // After each publish call and before returning the URL, add a tiny delay to let the CDN catch up.
+        await tinySleep(250);
+      }
       // Still inside rehostToWebflowAssets(), in EACH place where we return after a successful parse, NORMALIZE the URL to CDN before returning.
       const finalUrlC = normalizeToCdnUrl(parsed.url, siteId);
       if (finalUrlC !== parsed.url) {
